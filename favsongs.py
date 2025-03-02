@@ -17,7 +17,10 @@ sp = spotipy.Spotify(auth_manager=SpotifyOAuth(client_id=os.getenv("CLIENT_ID"),
                                                scope="user-read-playback-state"))
 
 
-
+# sp_like = spotipy.Spotify(auth_manager=SpotifyOAuth(client_id=os.getenv("CLIENT_ID"),
+#                                                client_secret=os.getenv("CLIENT_SECRET"),
+#                                                redirect_uri=os.getenv("REDIRECT_URI"),
+#                                                scope="playlist-modify-public"))
 
 
 
@@ -41,9 +44,8 @@ def check_fav():
     
 
     if fav_songs.get(results['item']['id'], None) is not None:
-        print("This song has already been added to your listened!\n")
-        last_play_ms = fav_songs[results['item']['id']]['last_played']
-    
+        last_play_ms = time.time()*1000.0 - fav_songs[results['item']['id']]['last_played']
+        print("Last played " + str(last_play_ms/1000.0) + " seconds ago\n")
         if last_play_ms < results['item']['duration_ms']:
             print("This song isn't finished!\n")
             return
@@ -59,9 +61,10 @@ def check_fav():
     fav_songs.update(clean_results)
     
     if fav_songs[track_id]['occurrences'] > 5:
-        print("This is one of your favourite songs!\n")
+        print("You liked this song~!\n")
+        # sp_like.playlist_add_items()
     else:
-        print("This song is " + str(5 - clean_results[track_id]['occurrences']) + " plays away from being one of your favourites!\n")
+        print(clean_results[track_id]['name']+" is " + str(5 - clean_results[track_id]['occurrences']) + " plays away from being one of your favourites!\n")
     
     with open("fav_songs.json", "w") as f:
         json.dump(fav_songs, f)
