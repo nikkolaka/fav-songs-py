@@ -52,3 +52,5 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+
+fav_songs.json
