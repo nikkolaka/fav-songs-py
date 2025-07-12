@@ -1,9 +1,9 @@
 services:
-  image: fav-songs-py-server
-  server:
-    build:
-      context: .
-    ports:
-      - 8000:8000
-    env_file:
-      - .env
+
+    server:
+      build:
+        context: .
+      ports:
+        - 8000:8000
+      env_file:
+        - .env
