@@ -54,3 +54,5 @@ env.bak/
 venv.bak/
 
 fav_songs.json
+.cache
+fav_songs.json

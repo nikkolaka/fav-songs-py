@@ -1,4 +1,5 @@
 services:
+  image: fav-songs-py-server
   server:
     build:
       context: .
