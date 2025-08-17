@@ -20,7 +20,7 @@ class FavSongsTracker:
                                                redirect_uri=os.getenv("REDIRECT_URI"),
                                                scope="user-read-playback-state,playlist-modify-public",
                                                cache_path="./data/.cache"))
-        self.fav_songs_file = "fav_songs.json"
+        self.fav_songs_file = "/app/songs_data/fav_songs.json"
         self.fav_songs = self._load_fav_songs()
         self.playlist_id = None
         self.running = True
@@ -229,7 +229,8 @@ class FavSongsTracker:
 def main():
     #Main Entry Point
     os.makedirs("data", exist_ok=True)  # Ensure data directory exists
-
+    os.makedirs("/app/songs_data", exist_ok=True)
+    
     tracker = FavSongsTracker()
     tracker.run()
 
