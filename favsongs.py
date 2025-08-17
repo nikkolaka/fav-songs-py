@@ -21,7 +21,7 @@ class FavSongsTracker:
             cache_path="./data/.cache"
         ))
         
-        self.fav_songs_file = "/app/songs_data/fav_songs.json"
+        self.fav_songs_file = "fav_songs.json"  # Back to project root
         self.fav_songs = self._load_fav_songs()
         self.playlist_id = None
         self.running = True
@@ -30,6 +30,8 @@ class FavSongsTracker:
         self.current_track_start_time = None
         self.current_track_info = None
         self.track_was_completed = False
+        self.last_progress_update = 0
+        self.progress_update_interval = 5  # Update progress every 5 seconds
         
         # Configuration
         self.check_interval = 10  # seconds
@@ -95,17 +97,18 @@ class FavSongsTracker:
             # Search for existing playlist
             for playlist in playlists['items']:
                 if playlist['name'] == "Favourite Songs - Whatsit":
-                    print("Found existing playlist")
+                    print("[INFO] Found existing playlist")
                     return playlist['id']
             
             # Create new playlist
-            print("Creating new playlist...")
+            print("[INFO] Creating new playlist...")
             playlist = self.sp.user_playlist_create(
                 user_id, 
                 "Favourite Songs - Whatsit", 
                 public=True, 
                 description="Are these my favorites¿"
             )
+            print("[SUCCESS] Playlist created")
             return playlist['id']
             
         except Exception as e:
@@ -134,24 +137,54 @@ class FavSongsTracker:
         # Only count if it's been more than 5 minutes since last play
         return time_since_last > 300000  # 5 minutes in milliseconds
     
+    def _format_time(self, ms: int) -> str:
+        """Convert milliseconds to MM:SS format"""
+        seconds = ms // 1000
+        minutes = seconds // 60
+        seconds = seconds % 60
+        return f"{minutes:02d}:{seconds:02d}"
+    
+    def _create_progress_bar(self, progress_ms: int, duration_ms: int, width: int = 30) -> str:
+        """Create a text progress bar"""
+        if duration_ms == 0:
+            return "[" + "-" * width + "]"
+        
+        progress = progress_ms / duration_ms
+        filled = int(progress * width)
+        bar = "=" * filled + ">" if filled < width else "=" * width
+        bar = bar.ljust(width, "-")
+        return f"[{bar}]"
+    
     def _log_track_start(self, track_info: Dict[str, Any]):
         """Log when a new track starts playing"""
         track_name = track_info['name']
         artist_name = track_info['artists'][0]['name']
-        duration_ms = track_info['duration_ms']
-        duration_mins = duration_ms / 1000 / 60
+        duration_str = self._format_time(track_info['duration_ms'])
         
-        print(f"▶️ Started: {artist_name} - {track_name} ({duration_mins:.1f}min)")
+        print(f"\n[STARTED] {artist_name} - {track_name}")
+        print(f"Duration: {duration_str}")
         
     def _log_track_end(self, track_info: Dict[str, Any], was_completed: bool):
         """Log when a track ends"""
         track_name = track_info['name']
         artist_name = track_info['artists'][0]['name']
         
-        if was_completed:
-            print(f"⏹️ Completed: {artist_name} - {track_name}")
-        else:
-            print(f"⏭️ Skipped: {artist_name} - {track_name}")
+        status = "COMPLETED" if was_completed else "SKIPPED"
+        print(f"[{status}] {artist_name} - {track_name}")
+    
+    def _log_track_progress(self, current_playback: Dict[str, Any]):
+        """Log current track progress with progress bar"""
+        track = current_playback['item']
+        progress_ms = current_playback.get('progress_ms', 0)
+        duration_ms = track['duration_ms']
+        
+        progress_time = self._format_time(progress_ms)
+        duration_time = self._format_time(duration_ms)
+        progress_bar = self._create_progress_bar(progress_ms, duration_ms)
+        
+        completion_pct = (progress_ms / duration_ms * 100) if duration_ms > 0 else 0
+        
+        print(f"\r{progress_bar} {progress_time}/{duration_time} ({completion_pct:.1f}%)", end="", flush=True)
     
     def _handle_track_change(self, current_playback: Optional[Dict[str, Any]]):
         """Handle when tracks change or stop"""
@@ -167,6 +200,7 @@ class FavSongsTracker:
             self.current_track_info = current_playback['item']
             self.current_track_start_time = time.time()
             self.track_was_completed = False
+            self.last_progress_update = 0  # Reset progress timer
             self._log_track_start(self.current_track_info)
         
         # Handle playback stopping
@@ -185,6 +219,12 @@ class FavSongsTracker:
         
         if not current_playback:
             return
+        
+        # Show progress bar periodically
+        current_time = time.time()
+        if current_time - self.last_progress_update > self.progress_update_interval:
+            self._log_track_progress(current_playback)
+            self.last_progress_update = current_time
         
         track = current_playback['item']
         track_id = track['id']
@@ -219,11 +259,11 @@ class FavSongsTracker:
             occurrences = self.fav_songs[track_id]['occurrences']
             
             if occurrences == self.favorite_threshold:
-                print(f"🎵 Adding to favorites playlist... ({occurrences} plays)")
+                print(f"\n[FAVORITE] Adding to playlist after {occurrences} plays")
                 self._add_to_playlist(track_id)
             else:
                 remaining = self.favorite_threshold - occurrences
-                print(f"📈 {remaining} more plays needed for favorites ({occurrences}/{self.favorite_threshold})")
+                print(f"\n[PROGRESS] Play count: {occurrences}/{self.favorite_threshold} ({remaining} more needed)")
             
             # Save after each update
             self._save_fav_songs()
@@ -277,13 +317,13 @@ class FavSongsTracker:
             
             if track_id not in existing_track_ids:
                 self.sp.playlist_add_items(self.playlist_id, [track_id], position=0)
-                print(f"✅ Added to playlist!")
+                print("[SUCCESS] Added to favorites playlist")
                 
                 # Update cache with new track
                 self.playlist_track_cache.add(track_id)
                 
             else:
-                print(f"⚠️ Already in playlist - skipping")
+                print("[DUPLICATE] Song already exists in playlist")
                 
         except Exception as e:
             print(f"Error adding to playlist: {e}")
@@ -292,17 +332,22 @@ class FavSongsTracker:
     
     def run(self):
         """Main run loop"""
-        print("🎵 Starting Favorite Songs Tracker...")
-        print(f"⚙️ Monitoring every {self.check_interval} seconds")
-        print(f"🎯 Songs become favorites after {self.favorite_threshold} plays")
-        print(f"📊 Minimum completion: {self.min_completion_ratio:.0%}")
-        print("🔄 Monitoring started. Press Ctrl+C to stop.\n")
+        print("Spotify Favorite Songs Tracker")
+        print("=" * 35)
+        print(f"Monitor interval: {self.check_interval}s")
+        print(f"Favorite threshold: {self.favorite_threshold} plays")
+        print(f"Completion requirement: {self.min_completion_ratio:.0%}")
+        print("=" * 35)
+        print("Starting monitor... (Ctrl+C to stop)\n")
         
         # Initialize playlist
         self.playlist_id = self._find_or_create_playlist()
         if not self.playlist_id:
-            print("❌ Could not create/find playlist. Exiting.")
+            print("[ERROR] Could not create/find playlist. Exiting.")
             return
+        
+        print(f"[INFO] Using playlist: {self.playlist_id[:10]}...")
+        print("[INFO] Monitor active\n")
         
         while self.running:
             try:
@@ -314,14 +359,13 @@ class FavSongsTracker:
                 print(f"Error in main loop: {e}")
                 time.sleep(self.check_interval)
         
-        print("👋 Shutting down...")
+        print("\n[SHUTDOWN] Monitoring stopped")
         self._save_fav_songs()
 
 def main():
     """Main entry point"""
-    # Ensure data directories exist
+    # Ensure data directory exists
     os.makedirs("data", exist_ok=True)
-    os.makedirs("/app/songs_data", exist_ok=True)
     
     tracker = FavSongsTracker()
     tracker.run()
