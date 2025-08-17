@@ -1,218 +1,309 @@
 import spotipy
 import os
-import threading
 import json
-import sys
-import signal
 import time
-from typing import Dict, Optional, Any
+import signal
+import sys
 from dotenv import load_dotenv
 from spotipy.oauth2 import SpotifyOAuth
+from typing import Dict, Optional, Any
 
-
-
+# Load environment variables
 load_dotenv()
 
 class FavSongsTracker:
     def __init__(self):
-        self.sp = spotipy.Spotify(auth_manager=SpotifyOAuth(client_id=os.getenv("CLIENT_ID"),
-                                               client_secret=os.getenv("CLIENT_SECRET"),
-                                               redirect_uri=os.getenv("REDIRECT_URI"),
-                                               scope="user-read-playback-state,playlist-modify-public",
-                                               cache_path="./data/.cache"))
+        self.sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
+            client_id=os.getenv("CLIENT_ID"),
+            client_secret=os.getenv("CLIENT_SECRET"),
+            redirect_uri=os.getenv("REDIRECT_URI"),
+            scope="user-read-playback-state,playlist-modify-public",
+            cache_path="./data/.cache"
+        ))
+        
         self.fav_songs_file = "/app/songs_data/fav_songs.json"
         self.fav_songs = self._load_fav_songs()
         self.playlist_id = None
         self.running = True
         self.last_track_id = None
         self.last_check_time = 0
-
-        #configuration
-        self.check_interval = 10  # seconds until next check
-        self.favorite_threshold = 5  # number of plays until marked as favorite
-        self.min_completion = 0.8  # minimum completion percentage to consider a song finished
-        self.count_window = 300000  # time window that a played song can count towards occurence - 5 minutes in milliseconds
-
-        #set up signal handler for graceful shutdown
-        signal.signal(signal.SIGINT, self.signal_handler)
-        signal.signal(signal.SIGTERM, self.signal_handler)
-
-    def signal_handler(self, signum, frame):
-        #Handle shutdown signals gracefully.
+        self.current_track_start_time = None
+        self.current_track_info = None
+        self.track_was_completed = False
+        
+        # Configuration
+        self.check_interval = 10  # seconds
+        self.favorite_threshold = 5
+        self.min_completion_ratio = 0.8  # 80% completion before counting as "played"
+        
+        self.playlist_track_cache = set()  # Cache to avoid repeated API calls
+        self.cache_last_updated = 0
+        self.cache_ttl = 300  # Cache for 5 minutes
+        
+        # Set up signal handler for graceful shutdown
+        signal.signal(signal.SIGINT, self._signal_handler)
+        signal.signal(signal.SIGTERM, self._signal_handler)
+    
+    def _signal_handler(self, signum, frame):
+        """Handle shutdown signals gracefully"""
         print(f"\nReceived signal {signum}. Shutting down gracefully...")
         self.running = False
         self._save_fav_songs()
         sys.exit(0)
-
-    def _load_fav_songs(self) -> Dict[str, dict]:
-        #Load favorite songs from JSON file.
-
+    
+    def _load_fav_songs(self) -> Dict[str, Any]:
+        """Load favorite songs from JSON file"""
         try:
             if os.path.exists(self.fav_songs_file):
                 with open(self.fav_songs_file, "r") as f:
                     return json.load(f)
             return {}
         except (json.JSONDecodeError, IOError) as e:
-            print(f"Error loading favorite songs: {e}")
+            print(f"Error loading fav_songs.json: {e}")
             return {}
-        
+    
     def _save_fav_songs(self):
-        #Save favorite songs to JSON file.
+        """Save favorite songs to JSON file"""
         try:
             with open(self.fav_songs_file, "w") as f:
                 json.dump(self.fav_songs, f, indent=2)
         except IOError as e:
-            print(f"Error saving favorite songs: {e}")
-
+            print(f"Error saving fav_songs.json: {e}")
+    
     def get_current_playback(self) -> Optional[Dict[str, Any]]:
-        #Get the current playback state from Spotify.
+        """Get current playback information"""
         try:
             results = self.sp.current_playback()
             if results is None or not results.get('is_playing', False):
-                return None 
+                return None
             
             track_info = results.get('item')
             if not track_info:
                 return None
-
-            
+                
             return results
-
-            
-        except spotipy.SpotifyException as e:
+        except Exception as e:
             print(f"Error getting current playback: {e}")
             return None
-        
+    
     def _find_or_create_playlist(self) -> Optional[str]:
-        #Find or create a playlist for favorite songs.
+        """Find existing playlist or create new one"""
         try:
             user_id = self.sp.me()['id']
-            playlists = self.sp.user_playlists(user_id)
-
+            playlists = self.sp.user_playlists(user_id, limit=50)
+            
+            # Search for existing playlist
             for playlist in playlists['items']:
-                if '¿' in playlist['description'] or 'Whatsit' in playlist['name']:
-                    print("Found existing playlist.")
+                if playlist['name'] == "Favourite Songs - Whatsit":
+                    print("Found existing playlist")
                     return playlist['id']
-
-            print("No existing playlist found, creating a new one.")
+            
+            # Create new playlist
+            print("Creating new playlist...")
             playlist = self.sp.user_playlist_create(
-                user_id,
-                "Favourite Songs - Whatsit",
-                public=True,
+                user_id, 
+                "Favourite Songs - Whatsit", 
+                public=True, 
                 description="Are these my favorites¿"
             )
             return playlist['id']
-        
-        except spotipy.SpotifyException as e:
-            print(f"Error finding or creating playlist: {e}")
+            
+        except Exception as e:
+            print(f"Error with playlist: {e}")
             return None
-
+    
     def _is_song_completed(self, current_playback: Dict[str, Any]) -> bool:
-        #Check if song has been played sufficiently to be considered completed.
+        """Check if song has been played sufficiently"""
         progress_ms = current_playback.get('progress_ms', 0)
         duration_ms = current_playback['item'].get('duration_ms', 0)
+        
         if duration_ms == 0:
             return False
-
+            
         completion_ratio = progress_ms / duration_ms
-        return completion_ratio >= self.min_completion
-
-    def _should_play_count(self, track_id: str, timestamp: int) -> bool:
-        #Determine if this play should be counted
+        return completion_ratio >= self.min_completion_ratio
+    
+    def _should_count_play(self, track_id: str, timestamp: int) -> bool:
+        """Determine if this play should be counted"""
         if track_id not in self.fav_songs:
             return True
+            
         last_played = self.fav_songs[track_id].get('last_played', 0)
         time_since_last = timestamp - last_played
-        return time_since_last >= self.count_window  # convert to milliseconds
-
+        
+        # Only count if it's been more than 5 minutes since last play
+        return time_since_last > 300000  # 5 minutes in milliseconds
+    
+    def _log_track_start(self, track_info: Dict[str, Any]):
+        """Log when a new track starts playing"""
+        track_name = track_info['name']
+        artist_name = track_info['artists'][0]['name']
+        duration_ms = track_info['duration_ms']
+        duration_mins = duration_ms / 1000 / 60
+        
+        print(f"▶️ Started: {artist_name} - {track_name} ({duration_mins:.1f}min)")
+        
+    def _log_track_end(self, track_info: Dict[str, Any], was_completed: bool):
+        """Log when a track ends"""
+        track_name = track_info['name']
+        artist_name = track_info['artists'][0]['name']
+        
+        if was_completed:
+            print(f"⏹️ Completed: {artist_name} - {track_name}")
+        else:
+            print(f"⏭️ Skipped: {artist_name} - {track_name}")
+    
+    def _handle_track_change(self, current_playback: Optional[Dict[str, Any]]):
+        """Handle when tracks change or stop"""
+        current_track_id = current_playback['item']['id'] if current_playback else None
+        
+        # Handle track ending/changing
+        if self.last_track_id and self.last_track_id != current_track_id:
+            if self.current_track_info:
+                self._log_track_end(self.current_track_info, self.track_was_completed)
+        
+        # Handle new track starting
+        if current_track_id and current_track_id != self.last_track_id:
+            self.current_track_info = current_playback['item']
+            self.current_track_start_time = time.time()
+            self.track_was_completed = False
+            self._log_track_start(self.current_track_info)
+        
+        # Handle playback stopping
+        elif not current_playback and self.last_track_id:
+            if self.current_track_info:
+                self._log_track_end(self.current_track_info, self.track_was_completed)
+            self.current_track_info = None
+        
+        self.last_track_id = current_track_id
     def process_current_track(self):
-        #Process the currently playing track and update favorite songs.
+        """Process the currently playing track"""
         current_playback = self.get_current_playback()
+        
+        # Handle track changes first (start/end logging)
+        self._handle_track_change(current_playback)
+        
         if not current_playback:
             return
         
         track = current_playback['item']
         track_id = track['id']
         timestamp = current_playback['timestamp']
-
-        # Skip if current track is the same as last processed
-        if self.last_track_id == track_id and (time.time() - self.last_check_time) <= self.check_interval:
+        
+        # Skip if same track as last check and not enough time passed
+        if track_id == self.last_track_id and (time.time() - self.last_check_time) < 30:
             return
             
-        self.last_track_id = track_id
         self.last_check_time = time.time()
         
-
-        # Check if song is completed
-        if not self._is_song_completed(current_playback):
-            return
-
-        # Check if this play should be counted
-        if not self._should_play_count(track_id, timestamp):
-            print("Song played too recently, skipping count.")
-            return
+        # Check if song is completed enough to count
+        if self._is_song_completed(current_playback):
+            self.track_was_completed = True
+            
+            # Check if we should count this play
+            if not self._should_count_play(track_id, timestamp):
+                return
+            
+            # Update song data
+            if track_id not in self.fav_songs:
+                self.fav_songs[track_id] = {
+                    "name": track['name'],
+                    "artist": track['artists'][0]['name'],
+                    "occurrences": 0,
+                    "last_played": 0
+                }
+            
+            self.fav_songs[track_id]['occurrences'] += 1
+            self.fav_songs[track_id]['last_played'] = timestamp
+            
+            occurrences = self.fav_songs[track_id]['occurrences']
+            
+            if occurrences == self.favorite_threshold:
+                print(f"🎵 Adding to favorites playlist... ({occurrences} plays)")
+                self._add_to_playlist(track_id)
+            else:
+                remaining = self.favorite_threshold - occurrences
+                print(f"📈 {remaining} more plays needed for favorites ({occurrences}/{self.favorite_threshold})")
+            
+            # Save after each update
+            self._save_fav_songs()
+    
+    def _get_all_playlist_tracks(self, playlist_id: str) -> set:
+        """Get all track IDs from playlist, handling pagination"""
+        all_track_ids = set()
         
-        print(f"Played: {track['name']} by {track['artists'][0]['name']}")
+        try:
+            results = self.sp.playlist_tracks(playlist_id, limit=100)
+            
+            while results:
+                # Add current batch of tracks
+                for item in results['items']:
+                    if item['track'] and item['track']['id']:
+                        all_track_ids.add(item['track']['id'])
+                
+                # Check if there are more tracks to fetch
+                if results['next']:
+                    results = self.sp.next(results)
+                else:
+                    break
+                    
+        except Exception as e:
+            print(f"Error fetching playlist tracks: {e}")
+            
+        return all_track_ids
+
+    def _get_playlist_tracks_cached(self, playlist_id: str) -> set:
+        """Get playlist tracks with caching to reduce API calls"""
+        current_time = time.time()
         
-        # Update song data
-        if track_id not in self.fav_songs:
-            self.fav_songs[track_id] = {
-                "name": track['name'],
-                "artist": track['artists'][0]['name'],
-                "occurrences": 0,
-                "last_played": 0
-            }
-
-        self.fav_songs[track_id]['occurrences'] += 1
-        self.fav_songs[track_id]['last_played'] = timestamp
-
-        occurrences = self.fav_songs[track_id]['occurrences']
-
-        if occurrences == self.favorite_threshold:
-            print(f"You liked this song: {track['name']} by {track['artists'][0]['name']}!")
-            self.sp.playlist_add_items(self.playlist_id, [track_id])
-        else:
-            remaining = self.favorite_threshold - occurrences
-            print(f"{track['name']} is {remaining} plays away from being one of your favorites!")
+        # If cache is still valid, use it
+        if (current_time - self.cache_last_updated) < self.cache_ttl:
+            return self.playlist_track_cache
+        
+        # Refresh cache
+        self.playlist_track_cache = self._get_all_playlist_tracks(playlist_id)
+        self.cache_last_updated = current_time
+        
+        return self.playlist_track_cache
 
     def _add_to_playlist(self, track_id: str):
-        #Add the current track to the favorite playlist.
+        """Add track to the favorites playlist"""
         if not self.playlist_id:
-            self.playlist_id = self._find_or_create_playlist()
-            if not self.playlist_id:
-                print("Failed to find or create playlist.")
-                return
-
+            return
+            
         try:
-            #Check if the track is already in the playlist
-            playlist_tracks = self.sp.playlist_tracks(self.playlist_id)
-            existing_track_ids = {track['track']['id'] for track in playlist_tracks['items']}
-
+            # Use cached check first for performance
+            existing_track_ids = self._get_playlist_tracks_cached(self.playlist_id)
+            
             if track_id not in existing_track_ids:
                 self.sp.playlist_add_items(self.playlist_id, [track_id], position=0)
-                print(f"Added {track_id} to playlist {self.playlist_id}.")
+                print(f"✅ Added to playlist!")
+                
+                # Update cache with new track
+                self.playlist_track_cache.add(track_id)
+                
             else:
-                print(f"{track_id} is already in the playlist {self.playlist_id}.")
-        
-        except spotipy.SpotifyException as e:
-            print(f"Error adding track to playlist: {e}")
+                print(f"⚠️ Already in playlist - skipping")
+                
+        except Exception as e:
+            print(f"Error adding to playlist: {e}")
+            # Reset cache on error to force refresh next time
+            self.cache_last_updated = 0
     
     def run(self):
-        #Main loop
-        print("Starting FavSongsTracker...")
-        print(f"Checking every {self.check_interval} seconds for new favorite songs.")
-        print(f"Songs will be marked as favorites after {self.favorite_threshold} plays.")
-        print(f"Minimum completion percentage to consider a song finished: {self.min_completion * 100}%")
-
-        #Initialize playlist
+        """Main run loop"""
+        print("🎵 Starting Favorite Songs Tracker...")
+        print(f"⚙️ Monitoring every {self.check_interval} seconds")
+        print(f"🎯 Songs become favorites after {self.favorite_threshold} plays")
+        print(f"📊 Minimum completion: {self.min_completion_ratio:.0%}")
+        print("🔄 Monitoring started. Press Ctrl+C to stop.\n")
+        
+        # Initialize playlist
         self.playlist_id = self._find_or_create_playlist()
         if not self.playlist_id:
-            print("Failed to find or create playlist. Exiting.")
+            print("❌ Could not create/find playlist. Exiting.")
             return
         
-        print(f"Using playlist ID: {self.playlist_id}")
-        print("Monitoring started...\nPress Ctrl+C to exit.")
-
         while self.running:
             try:
                 self.process_current_track()
@@ -222,19 +313,18 @@ class FavSongsTracker:
             except Exception as e:
                 print(f"Error in main loop: {e}")
                 time.sleep(self.check_interval)
-            
-        print("Shutting down...")
+        
+        print("👋 Shutting down...")
         self._save_fav_songs()
 
 def main():
-    #Main Entry Point
-    os.makedirs("data", exist_ok=True)  # Ensure data directory exists
+    """Main entry point"""
+    # Ensure data directories exist
+    os.makedirs("data", exist_ok=True)
     os.makedirs("/app/songs_data", exist_ok=True)
     
     tracker = FavSongsTracker()
     tracker.run()
 
-
 if __name__ == "__main__":
     main()
-
