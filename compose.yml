@@ -7,18 +7,28 @@ services:
       dockerfile: Dockerfile
     container_name: favsongs-tracker
     image: nikkolaka/favsongs:latest
+    env_file:
+      - .env
     environment:
-      - CLIENT_ID=${CLIENT_ID}
-      - CLIENT_SECRET=${CLIENT_SECRET}
-      - REDIRECT_URI=${REDIRECT_URI}
+      - FAVSONGS_DATA_DIR=/app/data
+      - FAVSONGS_DB_PATH=/app/data/favsongs.db
+      - FAVORITE_THRESHOLD=5
+      - MIN_COMPLETION_RATIO=0.8
+      - CHECK_INTERVAL=10
+      - MIN_PLAY_GAP_MS=300000
+      - PROGRESS_UPDATE_INTERVAL=5
+      - PLAYLIST_CACHE_TTL=300
     volumes:
-      # Use named volumes instead of bind mounts
-      - spotify_cache:/app/data
-      - spotify_data:/app/songs_data
+      - favsongs_data:/app/data
     restart: unless-stopped
-    # Add init to handle signals properly
     init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
 
 volumes:
-  spotify_cache:
-  spotify_data:
+  favsongs_data:

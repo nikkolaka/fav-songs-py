@@ -15,12 +15,16 @@
 **/*.jfm
 **/bin
 **/charts
+**/data
 **/docker-compose*
 **/compose*
 **/Dockerfile*
 **/node_modules
 **/npm-debug.log
 **/obj
+**/*.db
+**/*.sqlite
+**/*.sqlite3
 **/secrets.dev.yaml
 **/values.dev.yaml
 LICENSE
