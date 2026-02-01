@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FavSongs Console - Harbor</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Merriweather:wght@300;400;700&family=Source+Sans+3:wght@300;400;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark"></div>
+          <div>
+            <p class="brand-title">FavSongs Console</p>
+            <p class="brand-subtitle">Reliable listening ledger</p>
+          </div>
+        </div>
+        <nav class="nav" aria-label="Primary">
+          <button class="nav-link is-active" data-view="dashboard">Dashboard</button>
+          <button class="nav-link" data-view="favorites">Favorites</button>
+          <button class="nav-link" data-view="settings">Settings</button>
+        </nav>
+        <div class="sidebar-card">
+          <p class="card-title">Service Health</p>
+          <div class="health">
+            <span class="health-dot"></span>
+            <div>
+              <p class="health-label">Stable</p>
+              <p class="health-sub">Last sync 2 min ago</p>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <div class="main">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Multi-account monitoring</p>
+            <h1>Tracking overview</h1>
+          </div>
+          <div class="topbar-actions">
+            <div class="select-wrap">
+              <label for="account-select">Account</label>
+              <select id="account-select" aria-label="Account">
+                <option>Loading accounts</option>
+              </select>
+            </div>
+            <button class="btn">Connect Spotify</button>
+          </div>
+        </header>
+
+        <section class="view" data-view="dashboard">
+          <div class="grid two">
+            <div class="panel">
+              <div class="panel-header">
+                <h2>Now Playing</h2>
+                <span class="status-pill">Active</span>
+              </div>
+              <div class="now-playing">
+                <div class="album"></div>
+                <div>
+                  <p class="track-title" id="track-title">Song Title</p>
+                  <p class="track-artist" id="track-artist">Artist Name</p>
+                  <div class="progress">
+                    <div class="progress-bar" id="progress-bar" style="width: 55%"></div>
+                  </div>
+                  <div class="progress-meta">
+                    <span id="progress-time">02:18</span>
+                    <span id="progress-total">04:12</span>
+                  </div>
+                </div>
+              </div>
+              <div class="panel-actions">
+                <button class="btn ghost" id="toggle-tracker">Pause Tracking</button>
+                <button class="btn ghost">Refresh Status</button>
+              </div>
+            </div>
+            <div class="panel">
+              <h2>Session Summary</h2>
+              <div class="stats">
+                <div class="stat">
+                  <p class="stat-label">Tracks counted</p>
+                  <p class="stat-value" id="tracks-counted">0</p>
+                </div>
+                <div class="stat">
+                  <p class="stat-label">Completion threshold</p>
+                  <p class="stat-value" id="completion-threshold">80%</p>
+                </div>
+                <div class="stat">
+                  <p class="stat-label">Next favorite in</p>
+                  <p class="stat-value" id="next-favorite">2 plays</p>
+                </div>
+              </div>
+              <div class="queue">
+                <p class="card-title">Recent plays</p>
+                <ul id="recent-plays"></ul>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="view hidden" data-view="favorites">
+          <div class="panel">
+            <div class="panel-header">
+              <h2>Favorites ledger</h2>
+              <button class="btn ghost">Export CSV</button>
+            </div>
+            <table class="table" aria-label="Favorites">
+              <thead>
+                <tr>
+                  <th>Track</th>
+                  <th>Artist</th>
+                  <th>Plays</th>
+                  <th>Last played</th>
+                </tr>
+              </thead>
+              <tbody id="favorites-table"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="view hidden" data-view="settings">
+          <div class="grid two">
+            <div class="panel">
+              <h2>Tracking controls</h2>
+              <form class="form">
+                <label>
+                  Favorite threshold
+                  <input type="number" value="5" min="1" />
+                </label>
+                <label>
+                  Completion ratio
+                  <input type="number" value="0.8" step="0.05" min="0.5" max="1" />
+                </label>
+                <label>
+                  Check interval (seconds)
+                  <input type="number" value="10" min="5" />
+                </label>
+                <button class="btn">Save settings</button>
+              </form>
+            </div>
+            <div class="panel">
+              <h2>Playlist targets</h2>
+              <form class="form">
+                <label>
+                  Playlist name
+                  <input type="text" value="Favourite Songs - Whatsit" />
+                </label>
+                <label>
+                  Playlist privacy
+                  <select>
+                    <option>Public</option>
+                    <option>Private</option>
+                  </select>
+                </label>
+                <label class="inline">
+                  <input type="checkbox" checked />
+                  Auto add when threshold reached
+                </label>
+                <button class="btn ghost">Sync Playlist</button>
+              </form>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
