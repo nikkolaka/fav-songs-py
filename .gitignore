@@ -52,6 +52,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+mds/
 
 fav_songs.json
 .cache

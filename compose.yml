@@ -6,18 +6,20 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: favsongs-tracker
-    image: nikkolaka/favsongs:latest
-    env_file:
-      - .env
+    image: favsongs-web:latest
     environment:
-      - FAVSONGS_DATA_DIR=/app/data
-      - FAVSONGS_DB_PATH=/app/data/favsongs.db
-      - FAVORITE_THRESHOLD=5
-      - MIN_COMPLETION_RATIO=0.8
-      - CHECK_INTERVAL=10
-      - MIN_PLAY_GAP_MS=300000
-      - PROGRESS_UPDATE_INTERVAL=5
-      - PLAYLIST_CACHE_TTL=300
+      CLIENT_ID: ${CLIENT_ID}
+      CLIENT_SECRET: ${CLIENT_SECRET}
+      REDIRECT_URI: ${REDIRECT_URI}
+      SITE_PASSWORD: ${SITE_PASSWORD}
+      SITE_USERNAME: ${SITE_USERNAME:-friend}
+      SPOTIFY_SCOPE: ${SPOTIFY_SCOPE:-user-read-playback-state,user-read-currently-playing,playlist-modify-public,playlist-modify-private}
+      FAVSONGS_DATA_DIR: /app/data
+      FAVSONGS_DB_PATH: /app/data/favsongs.db
+      OAUTH_STATE_TTL_SECONDS: ${OAUTH_STATE_TTL_SECONDS:-600}
+      PLAYLIST_CACHE_TTL: ${PLAYLIST_CACHE_TTL:-300}
+    ports:
+      - "8000:8000"
     volumes:
       - favsongs_data:/app/data
     restart: unless-stopped
@@ -29,6 +31,12 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
 
 volumes:
   favsongs_data:

@@ -19,7 +19,7 @@
           <div class="brand-mark"></div>
           <div>
             <p class="brand-title">FavSongs Console</p>
-            <p class="brand-subtitle">Reliable listening ledger</p>
+            <p class="brand-subtitle">Multi-account tracking</p>
           </div>
         </div>
         <nav class="nav" aria-label="Primary">
@@ -32,8 +32,8 @@
           <div class="health">
             <span class="health-dot"></span>
             <div>
-              <p class="health-label">Stable</p>
-              <p class="health-sub">Last sync 2 min ago</p>
+              <p class="health-label" id="service-status">Connected</p>
+              <p class="health-sub" id="health-subtext">Ready</p>
             </div>
           </div>
         </div>
@@ -42,51 +42,51 @@
       <div class="main">
         <header class="topbar">
           <div>
-            <p class="eyebrow">Multi-account monitoring</p>
+            <p class="eyebrow">Trusted frontend access</p>
             <h1>Tracking overview</h1>
           </div>
           <div class="topbar-actions">
             <div class="select-wrap">
-              <label for="account-select">Account</label>
-              <select id="account-select" aria-label="Account">
-                <option>Loading accounts</option>
-              </select>
+              <label for="account-select">Spotify Account</label>
+              <select id="account-select" aria-label="Account"></select>
             </div>
-            <button class="btn">Connect Spotify</button>
+            <button class="btn" id="connect-spotify">Connect Spotify</button>
           </div>
         </header>
+
+        <p class="message hidden" id="global-message"></p>
 
         <section class="view" data-view="dashboard">
           <div class="grid two">
             <div class="panel">
               <div class="panel-header">
                 <h2>Now Playing</h2>
-                <span class="status-pill">Active</span>
+                <span class="status-pill" id="tracker-status">Stopped</span>
               </div>
               <div class="now-playing">
                 <div class="album"></div>
                 <div>
-                  <p class="track-title" id="track-title">Song Title</p>
-                  <p class="track-artist" id="track-artist">Artist Name</p>
+                  <p class="track-title" id="track-title">No active track</p>
+                  <p class="track-artist" id="track-artist">Connect an account to begin</p>
                   <div class="progress">
-                    <div class="progress-bar" id="progress-bar" style="width: 55%"></div>
+                    <div class="progress-bar" id="progress-bar" style="width: 0%"></div>
                   </div>
                   <div class="progress-meta">
-                    <span id="progress-time">02:18</span>
-                    <span id="progress-total">04:12</span>
+                    <span id="progress-time">00:00</span>
+                    <span id="progress-total">00:00</span>
                   </div>
                 </div>
               </div>
               <div class="panel-actions">
-                <button class="btn ghost" id="toggle-tracker">Pause Tracking</button>
-                <button class="btn ghost">Refresh Status</button>
+                <button class="btn ghost" id="toggle-tracker">Start Tracking</button>
+                <button class="btn ghost" id="refresh-dashboard">Refresh</button>
               </div>
             </div>
             <div class="panel">
               <h2>Session Summary</h2>
               <div class="stats">
                 <div class="stat">
-                  <p class="stat-label">Tracks counted</p>
+                  <p class="stat-label">Tracks counted (24h)</p>
                   <p class="stat-value" id="tracks-counted">0</p>
                 </div>
                 <div class="stat">
@@ -95,11 +95,11 @@
                 </div>
                 <div class="stat">
                   <p class="stat-label">Next favorite in</p>
-                  <p class="stat-value" id="next-favorite">2 plays</p>
+                  <p class="stat-value" id="next-favorite">-</p>
                 </div>
               </div>
               <div class="queue">
-                <p class="card-title">Recent plays</p>
+                <p class="card-title dark">Recent plays</p>
                 <ul id="recent-plays"></ul>
               </div>
             </div>
@@ -110,7 +110,6 @@
           <div class="panel">
             <div class="panel-header">
               <h2>Favorites ledger</h2>
-              <button class="btn ghost">Export CSV</button>
             </div>
             <table class="table" aria-label="Favorites">
               <thead>
@@ -119,6 +118,7 @@
                   <th>Artist</th>
                   <th>Plays</th>
                   <th>Last played</th>
+                  <th>Actions</th>
                 </tr>
               </thead>
               <tbody id="favorites-table"></tbody>
@@ -130,41 +130,53 @@
           <div class="grid two">
             <div class="panel">
               <h2>Tracking controls</h2>
-              <form class="form">
+              <form class="form" id="tracking-form">
                 <label>
                   Favorite threshold
-                  <input type="number" value="5" min="1" />
+                  <input type="number" id="favorite-threshold" value="5" min="1" max="100" required />
                 </label>
                 <label>
                   Completion ratio
-                  <input type="number" value="0.8" step="0.05" min="0.5" max="1" />
+                  <input
+                    type="number"
+                    id="completion-ratio"
+                    value="0.8"
+                    step="0.05"
+                    min="0.5"
+                    max="1"
+                    required
+                  />
                 </label>
                 <label>
                   Check interval (seconds)
-                  <input type="number" value="10" min="5" />
+                  <input type="number" id="check-interval" value="10" min="3" max="300" required />
                 </label>
-                <button class="btn">Save settings</button>
+                <label>
+                  Min play gap (ms)
+                  <input type="number" id="play-gap" value="300000" min="0" max="86400000" required />
+                </label>
+                <button class="btn" type="submit">Save settings</button>
               </form>
             </div>
             <div class="panel">
               <h2>Playlist targets</h2>
-              <form class="form">
+              <form class="form" id="playlist-form">
                 <label>
                   Playlist name
-                  <input type="text" value="Favourite Songs - Whatsit" />
+                  <input type="text" id="playlist-name" value="Favourite Songs - Whatsit" required />
                 </label>
                 <label>
                   Playlist privacy
-                  <select>
-                    <option>Public</option>
-                    <option>Private</option>
+                  <select id="playlist-public">
+                    <option value="public">Public</option>
+                    <option value="private">Private</option>
                   </select>
                 </label>
                 <label class="inline">
-                  <input type="checkbox" checked />
+                  <input type="checkbox" id="auto-add" checked />
                   Auto add when threshold reached
                 </label>
-                <button class="btn ghost">Sync Playlist</button>
+                <button class="btn" type="submit">Save playlist settings</button>
               </form>
             </div>
           </div>

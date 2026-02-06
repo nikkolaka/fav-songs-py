@@ -116,6 +116,10 @@ h2,
   margin: 0 0 12px;
 }
 
+.card-title.dark {
+  color: var(--muted);
+}
+
 .health {
   display: flex;
   gap: 12px;
@@ -139,6 +143,21 @@ h2,
   margin: 2px 0 0;
   font-size: 12px;
   opacity: 0.7;
+}
+
+.message {
+  margin: 0 0 20px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: #e7f1fb;
+  color: #1d3f60;
+  border: 1px solid #c4dcf4;
+}
+
+.message.error {
+  background: #ffe9ea;
+  color: #742a2f;
+  border-color: #f4b8be;
 }
 
 .main {
@@ -198,6 +217,12 @@ input {
 .btn:hover,
 .btn:focus {
   transform: translateY(-1px);
+}
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
 }
 
 .btn.ghost {
@@ -340,6 +365,15 @@ input {
   text-align: left;
   padding: 12px 8px;
   border-bottom: 1px solid var(--border);
+}
+
+.table td:last-child {
+  width: 130px;
+}
+
+.table .btn {
+  padding: 6px 10px;
+  font-size: 13px;
 }
 
 .form {
