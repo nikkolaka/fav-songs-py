@@ -36,6 +36,11 @@ const playlistNameInput = document.getElementById("playlist-name");
 const playlistPublicInput = document.getElementById("playlist-public");
 const autoAddInput = document.getElementById("auto-add");
 
+const favoriteThresholdValue = document.getElementById("favorite-threshold-value");
+const completionRatioValue = document.getElementById("completion-ratio-value");
+const checkIntervalValue = document.getElementById("check-interval-value");
+const playGapValue = document.getElementById("play-gap-value");
+
 function showMessage(message, kind = "info") {
   if (!message) {
     globalMessage.textContent = "";
@@ -72,6 +77,25 @@ function formatRelativeTime(ms) {
     return `${Math.floor(diffSeconds / 3600)}h ago`;
   }
   return `${Math.floor(diffSeconds / 86400)}d ago`;
+}
+
+function formatDuration(ms) {
+  const totalSeconds = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}m ${seconds}s`;
+}
+
+function clamp(value, min, max) {
+  const num = Number(value);
+  return Math.min(Math.max(num, min), max);
+}
+
+function syncSliderReadouts() {
+  favoriteThresholdValue.textContent = String(Number(favoriteThresholdInput.value));
+  completionRatioValue.textContent = `${Math.round(Number(completionRatioInput.value) * 100)}%`;
+  checkIntervalValue.textContent = `${Math.round(Number(checkIntervalInput.value))}s`;
+  playGapValue.textContent = formatDuration(playGapInput.value);
 }
 
 function escapeHtml(value) {
@@ -214,13 +238,14 @@ function renderFavorites(favorites) {
 }
 
 function renderSettings(settings) {
-  favoriteThresholdInput.value = String(settings.favorite_threshold);
-  completionRatioInput.value = String(settings.min_completion_ratio);
-  checkIntervalInput.value = String(settings.check_interval);
-  playGapInput.value = String(settings.min_play_gap_ms);
+  favoriteThresholdInput.value = String(clamp(settings.favorite_threshold, 1, 20));
+  completionRatioInput.value = String(clamp(settings.min_completion_ratio, 0.5, 1));
+  checkIntervalInput.value = String(clamp(settings.check_interval, 3, 300));
+  playGapInput.value = String(clamp(settings.min_play_gap_ms, 0, 1_800_000));
   playlistNameInput.value = settings.playlist_name;
   playlistPublicInput.value = settings.playlist_public ? "public" : "private";
   autoAddInput.checked = Boolean(settings.auto_add_enabled);
+  syncSliderReadouts();
 }
 
 async function loadAccountData() {
@@ -382,15 +407,35 @@ const views = document.querySelectorAll(".view");
 navLinks.forEach((link) => {
   link.addEventListener("click", () => {
     navLinks.forEach((item) => item.classList.remove("is-active"));
-    link.classList.add("is-active");
+
     const target = link.dataset.view;
+    document.querySelectorAll(`.nav-link[data-view="${target}"]`).forEach((match) => {
+      match.classList.add("is-active");
+    });
+
     views.forEach((view) => {
       view.classList.toggle("hidden", view.dataset.view !== target);
     });
   });
 });
 
+[favoriteThresholdInput, completionRatioInput, checkIntervalInput, playGapInput].forEach((slider) => {
+  slider.addEventListener("input", syncSliderReadouts);
+});
+
 async function initialize() {
+  syncSliderReadouts();
+
+  if (window.location.protocol === "file:") {
+    serviceStatus.textContent = "Offline";
+    healthSubtext.textContent = "Use HTTP server";
+    showMessage(
+      "Open this app via http://<host>:<port>, not file://. API calls are blocked from local files.",
+      "error"
+    );
+    return;
+  }
+
   const query = new URLSearchParams(window.location.search);
   if (query.get("oauth") === "connected") {
     showMessage("Spotify account connected.");

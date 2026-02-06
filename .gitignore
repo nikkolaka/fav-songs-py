@@ -53,6 +53,7 @@ ENV/
 env.bak/
 venv.bak/
 mds/
+Winamp3_Classified_v5.5/
 
 fav_songs.json
 .cache

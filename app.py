@@ -945,7 +945,7 @@ class TrackerManager:
 
 
 class SettingsUpdate(BaseModel):
-    favorite_threshold: Optional[int] = Field(default=None, ge=1, le=100)
+    favorite_threshold: Optional[int] = Field(default=None, ge=1, le=20)
     min_completion_ratio: Optional[float] = Field(default=None, ge=0.5, le=1.0)
     check_interval: Optional[int] = Field(default=None, ge=3, le=300)
     min_play_gap_ms: Optional[int] = Field(default=None, ge=0, le=86_400_000)
