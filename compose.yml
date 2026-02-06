@@ -19,7 +19,7 @@ services:
       OAUTH_STATE_TTL_SECONDS: ${OAUTH_STATE_TTL_SECONDS:-600}
       PLAYLIST_CACHE_TTL: ${PLAYLIST_CACHE_TTL:-300}
     ports:
-      - "8080:8080"
+      - "8080:8000"
     volumes:
       - favsongs_data:/app/data
     restart: unless-stopped
