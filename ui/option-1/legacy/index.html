@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FavSongs Console - Neo Winamp</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Silkscreen:wght@400;700&family=VT323&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="scanlines" aria-hidden="true"></div>
+
+    <div class="app-shell">
+      <aside class="side-column panel-frame">
+        <div class="brand-block panel-inset">
+          <p class="brand-label">FavSongs</p>
+          <p class="brand-name">Super Secret Dashboard</p>
+        </div>
+
+        <div class="status-block panel-inset">
+          <p class="section-label">Service Health</p>
+          <div class="status-row">
+            <span class="status-led" aria-hidden="true"></span>
+            <div>
+              <p class="status-main" id="service-status">Connected</p>
+              <p class="status-sub" id="health-subtext">Ready</p>
+            </div>
+          </div>
+        </div>
+
+      </aside>
+
+      <main class="main-column">
+        <header class="console-rack panel-frame">
+          <div class="rack-line rack-title panel-inset">
+            <div class="window-title">
+              <span class="title-dot"></span>
+              <span>FavSongs v1.0</span>
+            </div>
+            <div class="window-controls" aria-hidden="true">
+              <span class="control-btn">_</span>
+              <span class="control-btn">[]</span>
+              <span class="control-btn">X</span>
+            </div>
+          </div>
+
+          <div class="rack-line rack-nav panel-inset">
+            <p class="section-label">Mode</p>
+            <nav class="nav nav-top" aria-label="Primary mirror">
+              <button class="nav-link is-active" data-view="dashboard">Dashboard</button>
+              <button class="nav-link" data-view="favorites">Favorites</button>
+              <button class="nav-link" data-view="settings">Settings</button>
+            </nav>
+            <div class="vu-meter" aria-hidden="true">
+              <span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+            </div>
+          </div>
+
+          <div class="rack-line rack-control panel-inset">
+            <div class="select-wrap">
+              <label for="account-select">Spotify Account</label>
+              <select id="account-select" aria-label="Account"></select>
+            </div>
+            <div class="rack-actions">
+              <button class="btn" id="connect-spotify">Connect Spotify</button>
+            </div>
+          </div>
+        </header>
+
+        <p class="message hidden" id="global-message"></p>
+
+        <section class="view" data-view="dashboard">
+          <div class="content-grid two-up">
+            <article class="panel-frame feature-panel">
+              <div class="panel-head">
+                <h2>Now Playing</h2>
+                <span class="status-pill" id="tracker-status">Stopped</span>
+              </div>
+
+              <div class="now-playing panel-inset">
+                <div class="album-art" aria-hidden="true"></div>
+                <div>
+                  <p class="track-title" id="track-title">No active track</p>
+                  <p class="track-artist" id="track-artist">Connect an account to begin</p>
+
+                  <div class="progress-slot">
+                    <div class="progress-bar" id="progress-bar" style="width: 0%"></div>
+                  </div>
+
+                  <div class="progress-meta">
+                    <span id="progress-time">00:00</span>
+                    <span id="progress-total">00:00</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="panel-actions">
+                <button class="btn ghost" id="toggle-tracker">Start Tracking</button>
+                <button class="btn ghost" id="refresh-dashboard">Refresh</button>
+              </div>
+            </article>
+
+            <article class="panel-frame">
+              <h2>Session Summary</h2>
+
+              <div class="stats-grid">
+                <div class="stat panel-inset">
+                  <p class="stat-label">Tracks counted (24h)</p>
+                  <p class="stat-value" id="tracks-counted">0</p>
+                </div>
+                <div class="stat panel-inset">
+                  <p class="stat-label">Completion threshold</p>
+                  <p class="stat-value" id="completion-threshold">80%</p>
+                </div>
+                <div class="stat panel-inset">
+                  <p class="stat-label">Next favorite in</p>
+                  <p class="stat-value" id="next-favorite">-</p>
+                </div>
+              </div>
+
+              <div class="queue-list">
+                <p class="section-label soft">Recent plays</p>
+                <ul id="recent-plays"></ul>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section class="view hidden" data-view="favorites">
+          <article class="panel-frame">
+            <div class="panel-head">
+              <h2>Favorites Ledger</h2>
+            </div>
+            <div class="table-wrap panel-inset">
+              <table class="table" aria-label="Favorites">
+                <thead>
+                  <tr>
+                    <th>Track</th>
+                    <th>Artist</th>
+                    <th>Plays</th>
+                    <th>Last played</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="favorites-table"></tbody>
+              </table>
+            </div>
+          </article>
+        </section>
+
+        <section class="view hidden" data-view="settings">
+          <div class="content-grid two-up">
+            <article class="panel-frame">
+              <h2>Tracking Controls</h2>
+              <form class="form" id="tracking-form">
+                <label class="slider-field">
+                  Favorite threshold
+                  <div class="slider-row">
+                    <div class="slider-track-wrap ref-21">
+                      <input type="range" id="favorite-threshold" min="1" max="20" step="1" value="5" />
+                    </div>
+                    <output class="slider-value" id="favorite-threshold-value" for="favorite-threshold">5</output>
+                  </div>
+                  <p class="slider-reference">Default - 5</p>
+                </label>
+
+                <label class="slider-field">
+                  Completion ratio
+                  <div class="slider-row">
+                    <div class="slider-track-wrap ref-60">
+                      <input type="range" id="completion-ratio" min="0.5" max="1" step="0.05" value="0.8" />
+                    </div>
+                    <output class="slider-value" id="completion-ratio-value" for="completion-ratio">80%</output>
+                  </div>
+                  <p class="slider-reference">Default - 80%</p>
+                </label>
+
+                <label class="slider-field">
+                  Check interval (seconds)
+                  <div class="slider-row">
+                    <div class="slider-track-wrap ref-2">
+                      <input type="range" id="check-interval" min="3" max="300" step="1" value="10" />
+                    </div>
+                    <output class="slider-value" id="check-interval-value" for="check-interval">10s</output>
+                  </div>
+                  <p class="slider-reference">Default - 10s</p>
+                </label>
+
+                <label class="slider-field">
+                  Min play gap
+                  <div class="slider-row">
+                    <div class="slider-track-wrap ref-17">
+                      <input type="range" id="play-gap" min="0" max="1800000" step="30000" value="300000" />
+                    </div>
+                    <output class="slider-value" id="play-gap-value" for="play-gap">5m 0s</output>
+                  </div>
+                  <p class="slider-reference">Default - 5m 0s</p>
+                </label>
+
+                <button class="btn" type="submit">Save settings</button>
+              </form>
+            </article>
+
+            <article class="panel-frame">
+              <h2>Playlist Targets</h2>
+              <form class="form" id="playlist-form">
+                <label>
+                  Playlist name
+                  <input type="text" id="playlist-name" value="Favourite Songs - Whatsit" required />
+                </label>
+                <label>
+                  Playlist privacy
+                  <select id="playlist-public">
+                    <option value="public">Public</option>
+                    <option value="private">Private</option>
+                  </select>
+                </label>
+                <label class="inline-check">
+                  <input type="checkbox" id="auto-add" checked />
+                  Auto add when threshold reached
+                </label>
+                <button class="btn" type="submit">Save playlist settings</button>
+              </form>
+            </article>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>

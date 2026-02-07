@@ -1216,4 +1216,14 @@ async def http_exception_handler(_: Request, exc: HTTPException):
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 
-app.mount("/", StaticFiles(directory="ui/option-1", html=True), name="ui")
+ui_root = os.path.join("ui", "option-1")
+ui_dist = os.path.join(ui_root, "dist")
+ui_legacy = os.path.join(ui_root, "legacy")
+if os.path.isdir(ui_dist):
+    ui_dir = ui_dist
+elif os.path.isdir(ui_legacy):
+    ui_dir = ui_legacy
+else:
+    ui_dir = ui_root
+
+app.mount("/", StaticFiles(directory=ui_dir, html=True), name="ui")
