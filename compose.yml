@@ -22,8 +22,8 @@ services:
       SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
       SESSION_COOKIE_SAMESITE: ${SESSION_COOKIE_SAMESITE:-lax}
       ADMIN_API_KEY: ${ADMIN_API_KEY:-}
-    expose:
-      - "8000"
+    ports:
+      - "8080:8000"
     volumes:
       - favsongs_data:/app/data
     restart: unless-stopped
@@ -41,20 +41,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 20s
-
-  nginx:
-    image: nginx:1.27
-    pull_policy: always
-    container_name: favsongs-nginx
-    depends_on:
-      - favsongs
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./nginx:/etc/nginx:ro
-      - ${NGINX_CERTS_PATH}:/etc/nginx/certs:ro
-    restart: unless-stopped
 
 volumes:
   favsongs_data:
