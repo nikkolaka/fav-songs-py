@@ -5,6 +5,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    pull_policy: build
     container_name: favsongs-tracker
     image: favsongs-web:latest
     environment:
@@ -43,6 +44,7 @@ services:
 
   nginx:
     image: nginx:1.27
+    pull_policy: always
     container_name: favsongs-nginx
     depends_on:
       - favsongs
