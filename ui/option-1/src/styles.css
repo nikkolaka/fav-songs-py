@@ -325,6 +325,23 @@ select {
   line-height: 1;
 }
 
+.account-value {
+  width: 100%;
+  border: 2px solid #7a6b84;
+  background:
+    linear-gradient(180deg, rgba(232, 222, 240, 0.17) 0 1px, transparent 1px),
+    linear-gradient(180deg, #2a2430, #1d1a23);
+  color: var(--text-main);
+  border-radius: 0;
+  padding: 8px 10px;
+  font-family: "VT323", monospace;
+  font-size: clamp(22px, 1.08vw, 28px);
+  line-height: 1;
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+}
+
 input:focus,
 select:focus,
 button:focus-visible {

@@ -70,19 +70,8 @@
 
           <div class="rack-line rack-control panel-inset">
             <div class="select-wrap">
-              <label for="account-select">Spotify Account</label>
-              <select
-                id="account-select"
-                aria-label="Account"
-                v-model="selectedAccountId"
-                :disabled="!controlsEnabled"
-                @change="onAccountChange"
-              >
-                <option v-if="!accounts.length" value="">No connected accounts</option>
-                <option v-for="account in accounts" :key="account.id" :value="account.id">
-                  {{ account.display_name }}
-                </option>
-              </select>
+              <label>Spotify Account</label>
+              <p class="account-value">{{ accountLabel }}</p>
             </div>
             <div class="rack-actions">
               <button class="btn" id="connect-spotify" type="button" @click="connectSpotify">
@@ -359,8 +348,7 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from "vue";
 
-const accounts = ref([]);
-const selectedAccountId = ref("");
+const account = ref(null);
 const trackerRunning = ref(false);
 const activeView = ref("dashboard");
 
@@ -393,7 +381,10 @@ const settings = reactive({
   auto_add_enabled: true,
 });
 
-const controlsEnabled = computed(() => accounts.value.length > 0);
+const controlsEnabled = computed(() => Boolean(account.value));
+const accountLabel = computed(() =>
+  account.value ? account.value.display_name : "No connected account"
+);
 
 const progressBarWidth = computed(() => {
   const percent = Math.min(Math.max(dashboard.progressRatio * 100, 0), 100);
@@ -485,7 +476,9 @@ async function apiRequest(path, options = {}) {
 
   if (!response.ok) {
     const detail = payload && payload.detail ? payload.detail : String(payload || "Unknown error");
-    throw new Error(detail);
+    const error = new Error(detail);
+    error.status = response.status;
+    throw error;
   }
 
   return payload;
@@ -504,28 +497,12 @@ function resetDashboard() {
   trackerRunning.value = false;
 }
 
-function renderAccounts(list) {
-  accounts.value = list;
-
-  if (!list.length) {
-    selectedAccountId.value = "";
-    resetDashboard();
-    favorites.value = [];
-    healthSubtext.value = "No accounts connected";
-    return;
-  }
-
-  const selectedStillExists = list.some((acct) => acct.id === selectedAccountId.value);
-  if (!selectedStillExists) {
-    selectedAccountId.value = list[0].id;
-  }
-}
-
 function renderDashboard(data) {
   const nowPlaying = data.now_playing;
-  const account = data.account;
+  const accountData = data.account;
 
-  trackerRunning.value = Boolean(account.tracker_running);
+  account.value = accountData;
+  trackerRunning.value = Boolean(accountData.tracker_running);
 
   if (nowPlaying && !nowPlaying.error && nowPlaying.name) {
     dashboard.trackTitle = nowPlaying.name;
@@ -547,7 +524,7 @@ function renderDashboard(data) {
   dashboard.recentPlays = data.recent_plays || [];
 
   serviceStatus.value = "Connected";
-  healthSubtext.value = `${account.display_name} selected`;
+  healthSubtext.value = `${accountData.display_name} connected`;
 }
 
 function renderFavorites(list) {
@@ -586,39 +563,16 @@ function renderSettings(data) {
   }
 }
 
-async function loadAccountData() {
-  if (!selectedAccountId.value) {
-    return;
-  }
-
-  const userId = selectedAccountId.value;
-
+async function loadSessionData() {
   const [dashboardPayload, favoritesPayload, settingsPayload] = await Promise.all([
-    apiRequest(`/api/accounts/${userId}/dashboard`),
-    apiRequest(`/api/accounts/${userId}/favorites`),
-    apiRequest(`/api/accounts/${userId}/settings`),
+    apiRequest("/api/me/dashboard"),
+    apiRequest("/api/me/favorites"),
+    apiRequest("/api/me/settings"),
   ]);
 
   renderDashboard(dashboardPayload);
   renderFavorites(favoritesPayload.favorites || []);
   renderSettings(settingsPayload);
-}
-
-async function loadAccountsAndData() {
-  const accountPayload = await apiRequest("/api/accounts");
-  renderAccounts(accountPayload.accounts || []);
-  if (selectedAccountId.value) {
-    await loadAccountData();
-  }
-}
-
-async function onAccountChange() {
-  showMessage("");
-  try {
-    await loadAccountData();
-  } catch (error) {
-    showMessage(error.message, "error");
-  }
 }
 
 async function connectSpotify() {
@@ -632,20 +586,20 @@ async function connectSpotify() {
 }
 
 async function refreshDashboard() {
-  if (!selectedAccountId.value) {
+  if (!controlsEnabled.value) {
     return;
   }
 
   showMessage("");
   try {
-    await loadAccountData();
+    await loadSessionData();
   } catch (error) {
     showMessage(error.message, "error");
   }
 }
 
 async function toggleTracker() {
-  if (!selectedAccountId.value) {
+  if (!controlsEnabled.value) {
     return;
   }
 
@@ -653,17 +607,15 @@ async function toggleTracker() {
   const action = trackerRunning.value ? "stop" : "start";
 
   try {
-    await apiRequest(`/api/accounts/${selectedAccountId.value}/tracker/${action}`, {
-      method: "POST",
-    });
-    await loadAccountData();
+    await apiRequest(`/api/me/tracker/${action}`, { method: "POST" });
+    await loadSessionData();
   } catch (error) {
     showMessage(error.message, "error");
   }
 }
 
 async function saveTrackingSettings() {
-  if (!selectedAccountId.value) {
+  if (!controlsEnabled.value) {
     return;
   }
 
@@ -677,19 +629,19 @@ async function saveTrackingSettings() {
   };
 
   try {
-    await apiRequest(`/api/accounts/${selectedAccountId.value}/settings`, {
+    await apiRequest("/api/me/settings", {
       method: "POST",
       body: JSON.stringify(payload),
     });
     showMessage("Tracking settings saved.");
-    await loadAccountData();
+    await loadSessionData();
   } catch (error) {
     showMessage(error.message, "error");
   }
 }
 
 async function savePlaylistSettings() {
-  if (!selectedAccountId.value) {
+  if (!controlsEnabled.value) {
     return;
   }
 
@@ -702,26 +654,26 @@ async function savePlaylistSettings() {
   };
 
   try {
-    await apiRequest(`/api/accounts/${selectedAccountId.value}/settings`, {
+    await apiRequest("/api/me/settings", {
       method: "POST",
       body: JSON.stringify(payload),
     });
     showMessage("Playlist settings saved.");
-    await loadAccountData();
+    await loadSessionData();
   } catch (error) {
     showMessage(error.message, "error");
   }
 }
 
 async function forceAdd(trackId) {
-  if (!trackId || !selectedAccountId.value) {
+  if (!trackId || !controlsEnabled.value) {
     return;
   }
 
   showMessage("");
 
   try {
-    await apiRequest(`/api/accounts/${selectedAccountId.value}/favorites/${trackId}/force-add`, {
+    await apiRequest(`/api/me/favorites/${trackId}/force-add`, {
       method: "POST",
     });
     showMessage("Track queued for playlist add.");
@@ -755,11 +707,20 @@ async function initialize() {
   }
 
   try {
-    await loadAccountsAndData();
+    await loadSessionData();
   } catch (error) {
-    serviceStatus.value = "Error";
-    healthSubtext.value = "API unavailable";
-    showMessage(error.message, "error");
+    if (error.status === 401) {
+      serviceStatus.value = "Not connected";
+      healthSubtext.value = "Connect Spotify to begin";
+      resetDashboard();
+      favorites.value = [];
+      account.value = null;
+      showMessage("Connect a Spotify account to begin.", "info");
+    } else {
+      serviceStatus.value = "Error";
+      healthSubtext.value = "API unavailable";
+      showMessage(error.message, "error");
+    }
   }
 }
 

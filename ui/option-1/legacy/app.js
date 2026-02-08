@@ -126,7 +126,9 @@ async function apiRequest(path, options = {}) {
 
   if (!response.ok) {
     const detail = payload && payload.detail ? payload.detail : String(payload || "Unknown error");
-    throw new Error(detail);
+    const error = new Error(detail);
+    error.status = response.status;
+    throw error;
   }
 
   return payload;
@@ -213,7 +215,7 @@ function renderDashboard(data) {
   }
 
   serviceStatus.textContent = "Connected";
-  healthSubtext.textContent = `${account.display_name} selected`;
+  healthSubtext.textContent = `${account.display_name} connected`;
 }
 
 function renderFavorites(favorites) {
@@ -249,16 +251,10 @@ function renderSettings(settings) {
 }
 
 async function loadAccountData() {
-  if (!state.selectedAccountId) {
-    return;
-  }
-
-  const userId = state.selectedAccountId;
-
   const [dashboard, favorites, settings] = await Promise.all([
-    apiRequest(`/api/accounts/${userId}/dashboard`),
-    apiRequest(`/api/accounts/${userId}/favorites`),
-    apiRequest(`/api/accounts/${userId}/settings`),
+    apiRequest("/api/me/dashboard"),
+    apiRequest("/api/me/favorites"),
+    apiRequest("/api/me/settings"),
   ]);
 
   renderDashboard(dashboard);
@@ -267,10 +263,21 @@ async function loadAccountData() {
 }
 
 async function loadAccountsAndData() {
-  const accountPayload = await apiRequest("/api/accounts");
-  renderAccounts(accountPayload.accounts || []);
-  if (state.selectedAccountId) {
-    await loadAccountData();
+  try {
+    const accountPayload = await apiRequest("/api/me");
+    renderAccounts(accountPayload ? [accountPayload] : []);
+    if (state.selectedAccountId) {
+      await loadAccountData();
+    }
+  } catch (error) {
+    if (error.status === 401) {
+      renderAccounts([]);
+      serviceStatus.textContent = "Not connected";
+      healthSubtext.textContent = "Connect Spotify to begin";
+      showMessage("Connect a Spotify account to begin.", "info");
+      return;
+    }
+    throw error;
   }
 }
 
@@ -316,9 +323,7 @@ toggleTrackerButton.addEventListener("click", async () => {
   const action = state.trackerRunning ? "stop" : "start";
 
   try {
-    await apiRequest(`/api/accounts/${state.selectedAccountId}/tracker/${action}`, {
-      method: "POST",
-    });
+    await apiRequest(`/api/me/tracker/${action}`, { method: "POST" });
     await loadAccountData();
   } catch (error) {
     showMessage(error.message, "error");
@@ -341,7 +346,7 @@ trackingForm.addEventListener("submit", async (event) => {
   };
 
   try {
-    await apiRequest(`/api/accounts/${state.selectedAccountId}/settings`, {
+    await apiRequest("/api/me/settings", {
       method: "POST",
       body: JSON.stringify(payload),
     });
@@ -367,7 +372,7 @@ playlistForm.addEventListener("submit", async (event) => {
   };
 
   try {
-    await apiRequest(`/api/accounts/${state.selectedAccountId}/settings`, {
+    await apiRequest("/api/me/settings", {
       method: "POST",
       body: JSON.stringify(payload),
     });
@@ -392,7 +397,7 @@ favoritesTable.addEventListener("click", async (event) => {
   showMessage("");
 
   try {
-    await apiRequest(`/api/accounts/${state.selectedAccountId}/favorites/${trackId}/force-add`, {
+    await apiRequest(`/api/me/favorites/${trackId}/force-add`, {
       method: "POST",
     });
     showMessage("Track queued for playlist add.");

@@ -1,5 +1,4 @@
 import asyncio
-import base64
 import os
 import secrets
 import sqlite3
@@ -36,19 +35,22 @@ class AppConfig:
     client_id: str
     client_secret: str
     redirect_uri: str
-    site_username: str
-    site_password: str
     db_path: str
     data_dir: str
     oauth_scope: str
     oauth_state_ttl_seconds: int
     playlist_cache_ttl: int
+    session_ttl_seconds: int
+    session_cookie_name: str
+    session_cookie_secure: bool
+    session_cookie_samesite: str
+    admin_api_key: Optional[str]
 
     @classmethod
     def from_env(cls) -> "AppConfig":
         missing = [
             name
-            for name in ("CLIENT_ID", "CLIENT_SECRET", "REDIRECT_URI", "SITE_PASSWORD")
+            for name in ("CLIENT_ID", "CLIENT_SECRET", "REDIRECT_URI")
             if not os.getenv(name)
         ]
         if missing:
@@ -62,8 +64,6 @@ class AppConfig:
             client_id=os.environ["CLIENT_ID"],
             client_secret=os.environ["CLIENT_SECRET"],
             redirect_uri=os.environ["REDIRECT_URI"],
-            site_username=os.getenv("SITE_USERNAME", "friend"),
-            site_password=os.environ["SITE_PASSWORD"],
             db_path=db_path,
             data_dir=data_dir,
             oauth_scope=os.getenv(
@@ -72,44 +72,56 @@ class AppConfig:
             ),
             oauth_state_ttl_seconds=int(os.getenv("OAUTH_STATE_TTL_SECONDS", "600")),
             playlist_cache_ttl=int(os.getenv("PLAYLIST_CACHE_TTL", "300")),
+            session_ttl_seconds=int(os.getenv("SESSION_TTL_SECONDS", "2592000")),
+            session_cookie_name=os.getenv("SESSION_COOKIE_NAME", "favsongs_session"),
+            session_cookie_secure=os.getenv("SESSION_COOKIE_SECURE", "false").lower() == "true",
+            session_cookie_samesite=os.getenv("SESSION_COOKIE_SAMESITE", "lax"),
+            admin_api_key=os.getenv("ADMIN_API_KEY"),
         )
 
 
-class BasicAuthMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app: FastAPI, username: str, password: str, public_paths: Optional[set[str]] = None):
+class SessionAuthMiddleware(BaseHTTPMiddleware):
+    def __init__(
+        self,
+        app: FastAPI,
+        db: "Database",
+        cookie_name: str,
+        public_paths: Optional[set[str]] = None,
+    ):
         super().__init__(app)
-        self.username = username
-        self.password = password
+        self.db = db
+        self.cookie_name = cookie_name
         self.public_paths = public_paths or set()
 
-    def _authorized(self, auth_header: Optional[str]) -> bool:
-        if not auth_header:
-            return False
-
-        try:
-            scheme, encoded = auth_header.split(" ", 1)
-            if scheme.lower() != "basic":
-                return False
-
-            raw = base64.b64decode(encoded.strip()).decode("utf-8")
-            username, password = raw.split(":", 1)
-            return secrets.compare_digest(username, self.username) and secrets.compare_digest(
-                password, self.password
-            )
-        except Exception:
-            return False
+    def _is_public(self, path: str) -> bool:
+        if path in self.public_paths:
+            return True
+        return False
 
     async def dispatch(self, request: Request, call_next):
+        request.state.user_id = None
         path = request.url.path
-        if path in self.public_paths:
+        if not (path.startswith("/api") or path.startswith("/me") or path.startswith("/auth")):
+            return await call_next(request)
+        if path.startswith("/api/accounts"):
+            return await call_next(request)
+        if self._is_public(path):
             return await call_next(request)
 
-        if not self._authorized(request.headers.get("Authorization")):
-            return PlainTextResponse(
-                "Authentication required",
-                status_code=401,
-                headers={"WWW-Authenticate": 'Basic realm="FavSongs"'},
-            )
+        session_id = request.cookies.get(self.cookie_name)
+        if not session_id:
+            return JSONResponse(status_code=401, content={"detail": "Authentication required"})
+
+        session = self.db.get_session(session_id)
+        if not session:
+            return JSONResponse(status_code=401, content={"detail": "Authentication required"})
+
+        if int(session["expires_at"]) < _now_seconds():
+            self.db.delete_session(session_id)
+            return JSONResponse(status_code=401, content={"detail": "Session expired"})
+
+        self.db.touch_session(session_id)
+        request.state.user_id = session["user_id"]
 
         return await call_next(request)
 
@@ -198,6 +210,17 @@ class Database:
                     state TEXT PRIMARY KEY,
                     expires_at INTEGER NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS sessions (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    expires_at INTEGER NOT NULL,
+                    last_seen INTEGER NOT NULL,
+                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions (user_id);
                 """
             )
             self.conn.commit()
@@ -396,6 +419,43 @@ class Database:
             self.conn.commit()
 
         return row["expires_at"] >= now
+
+    def create_session(self, user_id: str, ttl_seconds: int) -> str:
+        session_id = secrets.token_urlsafe(32)
+        now = _now_seconds()
+        expires_at = now + int(ttl_seconds)
+        with self.lock:
+            self.conn.execute("DELETE FROM sessions WHERE expires_at < ?", (now,))
+            self.conn.execute(
+                """
+                INSERT INTO sessions (id, user_id, created_at, expires_at, last_seen)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (session_id, user_id, now, expires_at, now),
+            )
+            self.conn.commit()
+        return session_id
+
+    def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+        with self.lock:
+            row = self.conn.execute(
+                "SELECT id, user_id, expires_at, last_seen FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+        return self._row_to_dict(row)
+
+    def touch_session(self, session_id: str) -> None:
+        with self.lock:
+            self.conn.execute(
+                "UPDATE sessions SET last_seen = ? WHERE id = ?",
+                (_now_seconds(), session_id),
+            )
+            self.conn.commit()
+
+    def delete_session(self, session_id: str) -> None:
+        with self.lock:
+            self.conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            self.conn.commit()
 
     def list_running_user_ids(self) -> list[str]:
         with self.lock:
@@ -986,10 +1046,17 @@ tracker_manager = TrackerManager(database, spotify_service, config.playlist_cach
 
 middleware = [
     Middleware(
-        BasicAuthMiddleware,
-        username=config.site_username,
-        password=config.site_password,
-        public_paths={"/healthz"},
+        SessionAuthMiddleware,
+        db=database,
+        cookie_name=config.session_cookie_name,
+        public_paths={
+            "/healthz",
+            "/api/health",
+            "/api/auth/spotify/start",
+            "/api/auth/spotify/callback",
+            "/auth/spotify/start",
+            "/auth/spotify/callback",
+        },
     )
 ]
 
@@ -1024,7 +1091,8 @@ async def api_health() -> Dict[str, str]:
 
 
 @app.get("/api/accounts")
-async def list_accounts() -> Dict[str, Any]:
+async def list_accounts(request: Request) -> Dict[str, Any]:
+    _require_admin(request)
     accounts = database.list_accounts()
     return {"accounts": accounts}
 
@@ -1072,7 +1140,17 @@ async def auth_spotify_callback(code: Optional[str] = None, state: Optional[str]
         expires_at=_now_seconds() + expires_in,
     )
 
-    return RedirectResponse(url="/?oauth=connected")
+    session_id = database.create_session(user["id"], config.session_ttl_seconds)
+    response = RedirectResponse(url="/?oauth=connected")
+    response.set_cookie(
+        config.session_cookie_name,
+        session_id,
+        max_age=config.session_ttl_seconds,
+        httponly=True,
+        secure=config.session_cookie_secure,
+        samesite=config.session_cookie_samesite,
+    )
+    return response
 
 
 def _require_account(user_id: str) -> Dict[str, Any]:
@@ -1082,8 +1160,22 @@ def _require_account(user_id: str) -> Dict[str, Any]:
     return account
 
 
-@app.get("/api/accounts/{user_id}/dashboard")
-async def account_dashboard(user_id: str) -> Dict[str, Any]:
+def _current_user_id(request: Request) -> str:
+    user_id = getattr(request.state, "user_id", None)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return str(user_id)
+
+
+def _require_admin(request: Request) -> None:
+    if not config.admin_api_key:
+        raise HTTPException(status_code=403, detail="Admin API disabled")
+    key = request.headers.get("X-Admin-Key")
+    if not key or not secrets.compare_digest(key, config.admin_api_key):
+        raise HTTPException(status_code=403, detail="Admin API key required")
+
+
+def _account_dashboard_payload(user_id: str) -> Dict[str, Any]:
     account = _require_account(user_id)
     settings = database.get_settings(user_id)
 
@@ -1126,27 +1218,67 @@ async def account_dashboard(user_id: str) -> Dict[str, Any]:
     }
 
 
+@app.get("/api/accounts/{user_id}/dashboard")
+async def account_dashboard_admin(user_id: str, request: Request) -> Dict[str, Any]:
+    _require_admin(request)
+    return _account_dashboard_payload(user_id)
+
+
+@app.get("/api/me/dashboard")
+@app.get("/me/dashboard")
+async def me_dashboard(request: Request) -> Dict[str, Any]:
+    user_id = _current_user_id(request)
+    return _account_dashboard_payload(user_id)
+
+
 @app.get("/api/accounts/{user_id}/favorites")
-async def account_favorites(user_id: str) -> Dict[str, Any]:
+async def account_favorites_admin(user_id: str, request: Request) -> Dict[str, Any]:
+    _require_admin(request)
+    _require_account(user_id)
+    return {"favorites": database.favorites(user_id, limit=200)}
+
+
+@app.get("/api/me/favorites")
+@app.get("/me/favorites")
+async def me_favorites(request: Request) -> Dict[str, Any]:
+    user_id = _current_user_id(request)
     _require_account(user_id)
     return {"favorites": database.favorites(user_id, limit=200)}
 
 
 @app.post("/api/accounts/{user_id}/favorites/{track_id}/force-add")
-async def force_add_favorite(user_id: str, track_id: str) -> Dict[str, Any]:
+async def force_add_favorite_admin(user_id: str, track_id: str, request: Request) -> Dict[str, Any]:
+    _require_admin(request)
+    _require_account(user_id)
+    added = tracker_manager.add_track_to_playlist(user_id, track_id, allow_duplicate=True)
+    return {"queued": bool(added)}
+
+
+@app.post("/api/me/favorites/{track_id}/force-add")
+@app.post("/me/favorites/{track_id}/force-add")
+async def me_force_add_favorite(track_id: str, request: Request) -> Dict[str, Any]:
+    user_id = _current_user_id(request)
     _require_account(user_id)
     added = tracker_manager.add_track_to_playlist(user_id, track_id, allow_duplicate=True)
     return {"queued": bool(added)}
 
 
 @app.get("/api/accounts/{user_id}/settings")
-async def account_settings(user_id: str) -> Dict[str, Any]:
+async def account_settings_admin(user_id: str, request: Request) -> Dict[str, Any]:
+    _require_admin(request)
     _require_account(user_id)
     return database.get_settings(user_id)
 
 
-@app.post("/api/accounts/{user_id}/settings")
-async def update_account_settings(user_id: str, payload: SettingsUpdate) -> Dict[str, Any]:
+@app.get("/api/me/settings")
+@app.get("/me/settings")
+async def me_settings(request: Request) -> Dict[str, Any]:
+    user_id = _current_user_id(request)
+    _require_account(user_id)
+    return database.get_settings(user_id)
+
+
+def _apply_settings_update(user_id: str, payload: SettingsUpdate) -> Dict[str, Any]:
     _require_account(user_id)
     updates = payload.model_dump(exclude_none=True)
 
@@ -1158,22 +1290,57 @@ async def update_account_settings(user_id: str, payload: SettingsUpdate) -> Dict
     return {"settings": updated}
 
 
+@app.post("/api/accounts/{user_id}/settings")
+async def update_account_settings_admin(user_id: str, payload: SettingsUpdate, request: Request) -> Dict[str, Any]:
+    _require_admin(request)
+    return _apply_settings_update(user_id, payload)
+
+
+@app.post("/api/me/settings")
+@app.post("/me/settings")
+async def update_me_settings(payload: SettingsUpdate, request: Request) -> Dict[str, Any]:
+    user_id = _current_user_id(request)
+    return _apply_settings_update(user_id, payload)
+
+
 @app.post("/api/accounts/{user_id}/tracker/start")
-async def start_tracker(user_id: str) -> Dict[str, bool]:
+async def start_tracker_admin(user_id: str, request: Request) -> Dict[str, bool]:
+    _require_admin(request)
+    _require_account(user_id)
+    await tracker_manager.start(user_id)
+    return {"running": True}
+
+
+@app.post("/api/me/tracker/start")
+@app.post("/me/tracker/start")
+async def me_start_tracker(request: Request) -> Dict[str, bool]:
+    user_id = _current_user_id(request)
     _require_account(user_id)
     await tracker_manager.start(user_id)
     return {"running": True}
 
 
 @app.post("/api/accounts/{user_id}/tracker/stop")
-async def stop_tracker(user_id: str) -> Dict[str, bool]:
+async def stop_tracker_admin(user_id: str, request: Request) -> Dict[str, bool]:
+    _require_admin(request)
     _require_account(user_id)
     await tracker_manager.stop(user_id)
     return {"running": False}
 
 
+@app.post("/api/me/tracker/stop")
+@app.post("/me/tracker/stop")
+async def me_stop_tracker(request: Request) -> Dict[str, bool]:
+    user_id = _current_user_id(request)
+    _require_account(user_id)
+    await tracker_manager.stop(user_id)
+    return {"running": False}
+
+
+@app.get("/api/me")
 @app.get("/me")
-async def me(user_id: str) -> Dict[str, Any]:
+async def me(request: Request) -> Dict[str, Any]:
+    user_id = _current_user_id(request)
     account = _require_account(user_id)
     return {
         "id": account["id"],
@@ -1183,32 +1350,13 @@ async def me(user_id: str) -> Dict[str, Any]:
     }
 
 
+@app.get("/api/me/now-playing")
 @app.get("/me/now-playing")
-async def me_now_playing(user_id: str) -> Dict[str, Any]:
+async def me_now_playing(request: Request) -> Dict[str, Any]:
+    user_id = _current_user_id(request)
     _require_account(user_id)
     sp = spotify_service.spotify_client(user_id)
     return {"now_playing": _format_now_playing(sp.current_playback())}
-
-
-@app.get("/me/favorites")
-async def me_favorites(user_id: str) -> Dict[str, Any]:
-    _require_account(user_id)
-    return {"favorites": database.favorites(user_id, limit=200)}
-
-
-@app.post("/me/settings")
-async def me_settings(user_id: str, payload: SettingsUpdate) -> Dict[str, Any]:
-    return await update_account_settings(user_id, payload)
-
-
-@app.post("/me/tracker/start")
-async def me_start_tracker(user_id: str) -> Dict[str, bool]:
-    return await start_tracker(user_id)
-
-
-@app.post("/me/tracker/stop")
-async def me_stop_tracker(user_id: str) -> Dict[str, bool]:
-    return await stop_tracker(user_id)
 
 
 @app.exception_handler(HTTPException)

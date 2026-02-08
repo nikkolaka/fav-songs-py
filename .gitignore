@@ -62,3 +62,6 @@ fav_songs.json
 # Node
 node_modules/
 .vite/
+
+# Nginx certs
+nginx/certs/
