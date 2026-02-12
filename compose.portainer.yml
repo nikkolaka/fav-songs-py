@@ -1,8 +1,10 @@
 services:
   favsongs:
+
     build:
       context: .
       dockerfile: Dockerfile
+    pull_policy: build
     image: favsongs-web:latest
     environment:
       CLIENT_ID: ${CLIENT_ID}
