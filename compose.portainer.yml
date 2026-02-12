@@ -1,0 +1,63 @@
+services:
+  favsongs:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: favsongs-web:latest
+    environment:
+      CLIENT_ID: ${CLIENT_ID}
+      CLIENT_SECRET: ${CLIENT_SECRET}
+      REDIRECT_URI: ${REDIRECT_URI}
+      SPOTIFY_SCOPE: ${SPOTIFY_SCOPE:-user-read-playback-state,user-read-currently-playing,playlist-modify-public,playlist-modify-private}
+      FAVSONGS_DATA_DIR: /app/data
+      FAVSONGS_DB_PATH: /app/data/favsongs.db
+      OAUTH_STATE_TTL_SECONDS: ${OAUTH_STATE_TTL_SECONDS:-600}
+      PLAYLIST_CACHE_TTL: ${PLAYLIST_CACHE_TTL:-300}
+      SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-2592000}
+      SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-favsongs_session}
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-true}
+      SESSION_COOKIE_SAMESITE: ${SESSION_COOKIE_SAMESITE:-lax}
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-}
+    expose:
+      - "8000"
+    volumes:
+      - favsongs_data:/app/data
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  nginx:
+    image: nginx:alpine
+    depends_on:
+      - favsongs
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ${CERTS_DIR:-/DATA/AppData/favsongs/certs}:/etc/nginx/certs:ro
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx
+      - /var/run
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  favsongs_data:
