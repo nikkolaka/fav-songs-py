@@ -48,7 +48,7 @@ services:
       - "80:80"
       - "443:443"
     volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - /DATA/AppData/favsongs/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ${CERTS_DIR:-/DATA/AppData/favsongs/certs}:/etc/nginx/certs:ro
     restart: unless-stopped
     read_only: true
