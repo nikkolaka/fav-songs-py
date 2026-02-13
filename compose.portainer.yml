@@ -1,6 +1,5 @@
 services:
   favsongs:
-
     build:
       context: .
       dockerfile: Dockerfile
@@ -20,8 +19,8 @@ services:
       SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-true}
       SESSION_COOKIE_SAMESITE: ${SESSION_COOKIE_SAMESITE:-lax}
       ADMIN_API_KEY: ${ADMIN_API_KEY:-}
-    expose:
-      - "8000"
+    ports:
+      - "${FAVSONGS_HOST_PORT:-18000}:8000"
     volumes:
       - favsongs_data:/app/data
     restart: unless-stopped
@@ -39,27 +38,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 20s
-
-  nginx:
-    image: nginx:alpine
-    depends_on:
-      - favsongs
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - /DATA/AppData/favsongs/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ${CERTS_DIR:-/DATA/AppData/favsongs/certs}:/etc/nginx/certs:ro
-    restart: unless-stopped
-    read_only: true
-    tmpfs:
-      - /var/cache/nginx
-      - /var/run
-      - /tmp
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
 
 volumes:
   favsongs_data:
