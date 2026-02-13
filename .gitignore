@@ -46,13 +46,17 @@ __pypackages__/
 
 # Environments
 .env
+.env.local
+.env.cert
+.env.prod
 .venv
 env/
 venv/
 ENV/
 env.bak/
 venv.bak/
-mds/
+mds/*
+!mds/ENV_SETUP_README.md
 Winamp3_Classified_v5.5/
 
 fav_songs.json

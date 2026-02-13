@@ -21,6 +21,8 @@ from starlette.requests import Request
 
 load_dotenv()
 
+DEFAULT_PLAYLIST_NAME = "Favourite Songs - Whatsit"
+
 
 def _now_seconds() -> int:
     return int(time.time())
@@ -44,6 +46,8 @@ class AppConfig:
     session_cookie_name: str
     session_cookie_secure: bool
     session_cookie_samesite: str
+    default_playlist_name: str
+    playlist_name_suffix: str
     admin_api_key: Optional[str]
 
     @classmethod
@@ -76,6 +80,8 @@ class AppConfig:
             session_cookie_name=os.getenv("SESSION_COOKIE_NAME", "favsongs_session"),
             session_cookie_secure=os.getenv("SESSION_COOKIE_SECURE", "false").lower() == "true",
             session_cookie_samesite=os.getenv("SESSION_COOKIE_SAMESITE", "lax"),
+            default_playlist_name=os.getenv("DEFAULT_PLAYLIST_NAME", DEFAULT_PLAYLIST_NAME),
+            playlist_name_suffix=os.getenv("PLAYLIST_NAME_SUFFIX", "").strip(),
             admin_api_key=os.getenv("ADMIN_API_KEY"),
         )
 
@@ -127,12 +133,13 @@ class SessionAuthMiddleware(BaseHTTPMiddleware):
 
 
 class Database:
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, default_playlist_name: str = DEFAULT_PLAYLIST_NAME):
         db_dir = os.path.dirname(db_path) or "."
         os.makedirs(db_dir, exist_ok=True)
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.lock = Lock()
+        self.default_playlist_name = default_playlist_name.strip() or DEFAULT_PLAYLIST_NAME
         self._init_schema()
 
     def _init_schema(self) -> None:
@@ -236,11 +243,11 @@ class Database:
         with self.lock:
             self.conn.execute(
                 """
-                INSERT INTO user_settings (user_id)
-                VALUES (?)
+                INSERT INTO user_settings (user_id, playlist_name)
+                VALUES (?, ?)
                 ON CONFLICT(user_id) DO NOTHING
                 """,
-                (user_id,),
+                (user_id, self.default_playlist_name),
             )
             self.conn.execute(
                 """
@@ -721,10 +728,17 @@ class RuntimeTrackState:
 
 
 class TrackerManager:
-    def __init__(self, db: Database, spotify_service: SpotifyService, playlist_cache_ttl: int):
+    def __init__(
+        self,
+        db: Database,
+        spotify_service: SpotifyService,
+        playlist_cache_ttl: int,
+        playlist_name_suffix: str = "",
+    ):
         self.db = db
         self.spotify_service = spotify_service
         self.playlist_cache_ttl = playlist_cache_ttl
+        self.playlist_name_suffix = playlist_name_suffix.strip()
         self.tasks: Dict[str, asyncio.Task] = {}
         self.runtime: Dict[str, RuntimeTrackState] = {}
         self.playlist_cache: Dict[str, Dict[str, Any]] = {}
@@ -770,16 +784,35 @@ class TrackerManager:
             return False
         return (progress_ms / duration_ms) >= min_completion_ratio
 
+    def _effective_playlist_name(self, configured_name: str) -> str:
+        base_name = configured_name.strip() or self.db.default_playlist_name
+        if not self.playlist_name_suffix:
+            return base_name
+        if base_name.endswith(self.playlist_name_suffix):
+            return base_name
+        return f"{base_name} {self.playlist_name_suffix}".strip()
+
     def _resolve_playlist_id(self, user_id: str, sp: spotipy.Spotify, settings: Dict[str, Any]) -> Optional[str]:
-        if settings.get("playlist_id"):
-            return str(settings["playlist_id"])
+        configured_name = str(settings.get("playlist_name") or self.db.default_playlist_name)
+        playlist_name = self._effective_playlist_name(configured_name)
+
+        existing_playlist_id = settings.get("playlist_id")
+        if existing_playlist_id and not self.playlist_name_suffix:
+            return str(existing_playlist_id)
+        if existing_playlist_id:
+            try:
+                playlist = sp.playlist(str(existing_playlist_id), fields="id,name")
+                if playlist and playlist.get("name") == playlist_name:
+                    return str(existing_playlist_id)
+            except Exception:
+                pass
+            self.db.update_settings(user_id, {"playlist_id": None})
 
         profile = sp.me()
         spotify_user_id = profile.get("id")
         if not spotify_user_id:
             return None
 
-        playlist_name = str(settings.get("playlist_name") or "Favourite Songs - Whatsit")
         playlist_public = bool(settings.get("playlist_public", True))
 
         results = sp.user_playlists(spotify_user_id, limit=50)
@@ -1040,9 +1073,14 @@ def _format_now_playing(playback: Optional[Dict[str, Any]]) -> Optional[Dict[str
 
 
 config = AppConfig.from_env()
-database = Database(config.db_path)
+database = Database(config.db_path, default_playlist_name=config.default_playlist_name)
 spotify_service = SpotifyService(config, database)
-tracker_manager = TrackerManager(database, spotify_service, config.playlist_cache_ttl)
+tracker_manager = TrackerManager(
+    database,
+    spotify_service,
+    config.playlist_cache_ttl,
+    config.playlist_name_suffix,
+)
 
 middleware = [
     Middleware(
