@@ -19,8 +19,8 @@ services:
       SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-true}
       SESSION_COOKIE_SAMESITE: ${SESSION_COOKIE_SAMESITE:-lax}
       ADMIN_API_KEY: ${ADMIN_API_KEY:-}
-    ports:
-      - "${FAVSONGS_HOST_PORT:-18000}:8000"
+    expose:
+      - "8000"
     volumes:
       - favsongs_data:/app/data
     restart: unless-stopped
@@ -38,6 +38,17 @@ services:
       timeout: 10s
       retries: 3
       start_period: 20s
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARED_TOKEN}
+    depends_on:
+      - favsongs
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
 
 volumes:
   favsongs_data:
