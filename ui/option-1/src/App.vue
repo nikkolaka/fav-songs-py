@@ -81,7 +81,7 @@
           </div>
         </header>
 
-        <p class="message" :class="{ hidden: !globalMessage, error: globalMessageKind === 'error' }">
+        <p class="message" :class="{ 'is-empty': !globalMessage, error: globalMessageKind === 'error' }">
           {{ globalMessage }}
         </p>
 

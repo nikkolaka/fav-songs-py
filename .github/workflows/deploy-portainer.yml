@@ -1,0 +1,20 @@
+name: Deploy to Portainer
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Portainer stack webhook
+        env:
+          PORTAINER_WEBHOOK_URL: ${{ secrets.PORTAINER_WEBHOOK_URL }}
+        run: |
+          if [ -z "$PORTAINER_WEBHOOK_URL" ]; then
+            echo "Missing PORTAINER_WEBHOOK_URL secret"
+            exit 1
+          fi
+          curl -fsS -X POST "$PORTAINER_WEBHOOK_URL"

@@ -46,6 +46,7 @@ body {
     radial-gradient(circle at 18% 6%, #342d3a 0%, transparent 35%),
     radial-gradient(circle at 82% 0%, #2b2631 0%, transparent 30%),
     linear-gradient(180deg, var(--bg-1), var(--bg-0));
+  scrollbar-gutter: stable;
 }
 
 .scanlines {
@@ -247,14 +248,16 @@ h2 {
   min-width: 0;
   display: flex;
   gap: 5px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 
 .nav-link {
+  flex: 1 1 0;
+  min-width: 0;
   border: 2px solid #8a7a94;
   background: linear-gradient(180deg, #5d5164, #3b323f);
   color: #efe8f3;
-  text-align: left;
+  text-align: center;
   font-size: clamp(10px, 0.7vw, 12px);
   line-height: 1.45;
   padding: 7px 10px;
@@ -385,12 +388,17 @@ button:focus-visible {
   padding: 10px 12px;
   font-size: clamp(22px, 1.08vw, 28px);
   line-height: 1;
+  min-height: 42px;
 }
 
 .message.error {
   border-color: #a2768e;
   background: linear-gradient(180deg, var(--error-bg), #332129);
   color: var(--error-fg);
+}
+
+.message.is-empty {
+  visibility: hidden;
 }
 
 .content-grid {
@@ -712,6 +720,10 @@ input[type="range"]::-moz-range-thumb {
   display: none;
 }
 
+.main-column > .view {
+  grid-row: 3;
+}
+
 @media (max-width: 1200px), (max-aspect-ratio: 1/1) {
   .app-shell {
     grid-template-columns: 1fr;
@@ -808,4 +820,3 @@ input[type="range"]::-moz-range-thumb {
     min-width: 560px;
   }
 }
-
