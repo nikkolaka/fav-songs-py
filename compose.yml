@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   favsongs:
     build:
@@ -22,10 +20,14 @@ services:
       SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
       SESSION_COOKIE_SAMESITE: ${SESSION_COOKIE_SAMESITE:-lax}
       DEFAULT_PLAYLIST_NAME: ${DEFAULT_PLAYLIST_NAME:-Favourite Songs - Whatsit}
-      PLAYLIST_NAME_SUFFIX: ${PLAYLIST_NAME_SUFFIX:-}
+      PLAYLIST_NAME_SUFFIX: ${PLAYLIST_NAME_SUFFIX:-[HOME]}
+      LOCAL_ONLY_MODE: ${LOCAL_ONLY_MODE:-true}
+      ALLOWED_NETWORKS: ${ALLOWED_NETWORKS:-127.0.0.0/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,fe80::/10,fc00::/7}
+      TRUST_FORWARDED_FOR: ${TRUST_FORWARDED_FOR:-false}
+      MAX_CONNECTED_USERS: ${MAX_CONNECTED_USERS:-6}
       ADMIN_API_KEY: ${ADMIN_API_KEY:-}
     ports:
-      - "8080:8000"
+      - ${APP_PORT:-8080}:8000
     volumes:
       - favsongs_data:/app/data
     restart: unless-stopped

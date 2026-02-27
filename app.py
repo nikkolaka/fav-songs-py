@@ -1,4 +1,5 @@
 import asyncio
+import ipaddress
 import os
 import secrets
 import sqlite3
@@ -22,6 +23,18 @@ from starlette.requests import Request
 load_dotenv()
 
 DEFAULT_PLAYLIST_NAME = "Favourite Songs - Whatsit"
+DEFAULT_ALLOWED_NETWORKS = ",".join(
+    [
+        "127.0.0.0/8",
+        "::1/128",
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "169.254.0.0/16",
+        "fe80::/10",
+        "fc00::/7",
+    ]
+)
 
 
 def _now_seconds() -> int:
@@ -30,6 +43,26 @@ def _now_seconds() -> int:
 
 def _now_millis() -> int:
     return int(time.time() * 1000)
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_allowed_networks(raw_value: str) -> tuple[str, ...]:
+    networks = tuple(part.strip() for part in raw_value.split(",") if part.strip())
+    if not networks:
+        raise RuntimeError("ALLOWED_NETWORKS must include at least one CIDR entry")
+
+    for network in networks:
+        try:
+            ipaddress.ip_network(network, strict=False)
+        except ValueError as exc:
+            raise RuntimeError(f"Invalid ALLOWED_NETWORKS entry '{network}': {exc}") from exc
+    return networks
 
 
 @dataclass(frozen=True)
@@ -48,6 +81,10 @@ class AppConfig:
     session_cookie_samesite: str
     default_playlist_name: str
     playlist_name_suffix: str
+    local_only_mode: bool
+    allowed_networks: tuple[str, ...]
+    trust_forwarded_for: bool
+    max_connected_users: int
     admin_api_key: Optional[str]
 
     @classmethod
@@ -63,6 +100,12 @@ class AppConfig:
 
         data_dir = os.getenv("FAVSONGS_DATA_DIR", "data")
         db_path = os.getenv("FAVSONGS_DB_PATH", os.path.join(data_dir, "favsongs.db"))
+        max_connected_users = int(os.getenv("MAX_CONNECTED_USERS", "6"))
+        if max_connected_users < 1:
+            raise RuntimeError("MAX_CONNECTED_USERS must be >= 1")
+        allowed_networks = _parse_allowed_networks(
+            os.getenv("ALLOWED_NETWORKS", DEFAULT_ALLOWED_NETWORKS)
+        )
 
         return cls(
             client_id=os.environ["CLIENT_ID"],
@@ -82,8 +125,59 @@ class AppConfig:
             session_cookie_samesite=os.getenv("SESSION_COOKIE_SAMESITE", "lax"),
             default_playlist_name=os.getenv("DEFAULT_PLAYLIST_NAME", DEFAULT_PLAYLIST_NAME),
             playlist_name_suffix=os.getenv("PLAYLIST_NAME_SUFFIX", "").strip(),
+            local_only_mode=_env_flag("LOCAL_ONLY_MODE", True),
+            allowed_networks=allowed_networks,
+            trust_forwarded_for=_env_flag("TRUST_FORWARDED_FOR", False),
+            max_connected_users=max_connected_users,
             admin_api_key=os.getenv("ADMIN_API_KEY"),
         )
+
+
+class LocalNetworkOnlyMiddleware(BaseHTTPMiddleware):
+    def __init__(
+        self,
+        app: FastAPI,
+        allowed_networks: tuple[str, ...],
+        trust_forwarded_for: bool,
+    ):
+        super().__init__(app)
+        self.allowed_networks = tuple(
+            ipaddress.ip_network(network, strict=False) for network in allowed_networks
+        )
+        self.trust_forwarded_for = trust_forwarded_for
+
+    def _client_host(self, request: Request) -> Optional[str]:
+        if self.trust_forwarded_for:
+            forwarded_for = request.headers.get("x-forwarded-for", "")
+            if forwarded_for:
+                return forwarded_for.split(",")[0].strip()
+
+        if request.client and request.client.host:
+            return request.client.host
+        return None
+
+    def _host_allowed(self, host: Optional[str]) -> bool:
+        if not host:
+            return False
+        if host == "localhost":
+            return True
+        try:
+            client_ip = ipaddress.ip_address(host)
+        except ValueError:
+            return False
+        if isinstance(client_ip, ipaddress.IPv6Address) and client_ip.ipv4_mapped:
+            client_ip = client_ip.ipv4_mapped
+        return any(client_ip in network for network in self.allowed_networks)
+
+    async def dispatch(self, request: Request, call_next):
+        if self._host_allowed(self._client_host(request)):
+            return await call_next(request)
+
+        message = "This service is restricted to your local network."
+        path = request.url.path
+        if path.startswith("/api") or path.startswith("/me") or path.startswith("/auth"):
+            return JSONResponse(status_code=403, content={"detail": message})
+        return PlainTextResponse(content=message, status_code=403)
 
 
 class SessionAuthMiddleware(BaseHTTPMiddleware):
@@ -130,6 +224,10 @@ class SessionAuthMiddleware(BaseHTTPMiddleware):
         request.state.user_id = session["user_id"]
 
         return await call_next(request)
+
+
+class AccountLimitReached(RuntimeError):
+    pass
 
 
 class Database:
@@ -239,6 +337,10 @@ class Database:
     def _row_to_dict(self, row: Optional[sqlite3.Row]) -> Optional[Dict[str, Any]]:
         return dict(row) if row else None
 
+    def _count_accounts_unlocked(self) -> int:
+        row = self.conn.execute("SELECT COUNT(*) AS cnt FROM users").fetchone()
+        return int(row["cnt"] if row else 0)
+
     def ensure_user_defaults(self, user_id: str) -> None:
         with self.lock:
             self.conn.execute(
@@ -267,7 +369,12 @@ class Database:
             ).fetchone()
         return self._row_to_dict(row)
 
-    def upsert_user(self, spotify_user_id: str, display_name: str) -> Dict[str, Any]:
+    def upsert_user(
+        self,
+        spotify_user_id: str,
+        display_name: str,
+        max_connected_users: Optional[int] = None,
+    ) -> Dict[str, Any]:
         with self.lock:
             existing = self.conn.execute(
                 "SELECT id FROM users WHERE spotify_user_id = ?",
@@ -282,6 +389,12 @@ class Database:
                     (display_name, user_id),
                 )
             else:
+                if max_connected_users is not None:
+                    existing_count = self._count_accounts_unlocked()
+                    if existing_count >= max_connected_users:
+                        raise AccountLimitReached(
+                            f"Maximum of {max_connected_users} connected users reached"
+                        )
                 user_id = secrets.token_urlsafe(16)
                 self.conn.execute(
                     """
@@ -297,6 +410,10 @@ class Database:
         if not user:
             raise RuntimeError("Could not upsert user")
         return user
+
+    def count_accounts(self) -> int:
+        with self.lock:
+            return self._count_accounts_unlocked()
 
     def list_accounts(self) -> list[Dict[str, Any]]:
         with self.lock:
@@ -1082,7 +1199,17 @@ tracker_manager = TrackerManager(
     config.playlist_name_suffix,
 )
 
-middleware = [
+middleware = []
+if config.local_only_mode:
+    middleware.append(
+        Middleware(
+            LocalNetworkOnlyMiddleware,
+            allowed_networks=config.allowed_networks,
+            trust_forwarded_for=config.trust_forwarded_for,
+        )
+    )
+
+middleware.append(
     Middleware(
         SessionAuthMiddleware,
         db=database,
@@ -1090,13 +1217,14 @@ middleware = [
         public_paths={
             "/healthz",
             "/api/health",
+            "/api/public/status",
             "/api/auth/spotify/start",
             "/api/auth/spotify/callback",
             "/auth/spotify/start",
             "/auth/spotify/callback",
         },
     )
-]
+)
 
 app = FastAPI(
     title="FavSongs",
@@ -1126,6 +1254,11 @@ async def healthz() -> PlainTextResponse:
 @app.get("/api/health")
 async def api_health() -> Dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/api/public/status")
+async def public_status() -> Dict[str, Any]:
+    return {"service": _service_status_payload()}
 
 
 @app.get("/api/accounts")
@@ -1170,7 +1303,14 @@ async def auth_spotify_callback(code: Optional[str] = None, state: Optional[str]
     if not spotify_user_id:
         raise HTTPException(status_code=400, detail="Spotify profile missing user id")
 
-    user = database.upsert_user(spotify_user_id=spotify_user_id, display_name=display_name)
+    try:
+        user = database.upsert_user(
+            spotify_user_id=spotify_user_id,
+            display_name=display_name,
+            max_connected_users=config.max_connected_users,
+        )
+    except AccountLimitReached:
+        return RedirectResponse(url=f"/?oauth=limit&max={config.max_connected_users}")
     database.save_tokens(
         user_id=user["id"],
         access_token=access_token,
@@ -1213,6 +1353,18 @@ def _require_admin(request: Request) -> None:
         raise HTTPException(status_code=403, detail="Admin API key required")
 
 
+def _service_status_payload() -> Dict[str, Any]:
+    connected = database.count_accounts()
+    max_connected = int(config.max_connected_users)
+    return {
+        "local_only_mode": bool(config.local_only_mode),
+        "connected_users": connected,
+        "max_connected_users": max_connected,
+        "remaining_slots": max(max_connected - connected, 0),
+        "accepting_new_users": connected < max_connected,
+    }
+
+
 def _account_dashboard_payload(user_id: str) -> Dict[str, Any]:
     account = _require_account(user_id)
     settings = database.get_settings(user_id)
@@ -1252,6 +1404,7 @@ def _account_dashboard_payload(user_id: str) -> Dict[str, Any]:
             "completion_threshold": float(settings["min_completion_ratio"]),
             "next_favorite": next_favorite,
         },
+        "service": _service_status_payload(),
         "recent_plays": recent,
     }
 

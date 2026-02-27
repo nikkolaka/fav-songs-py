@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile
     pull_policy: build
-    image: favsongs-web:latest
+    image: favsongs-web:portainer-local
     environment:
       CLIENT_ID: ${CLIENT_ID}
       CLIENT_SECRET: ${CLIENT_SECRET}
@@ -16,13 +16,17 @@ services:
       PLAYLIST_CACHE_TTL: ${PLAYLIST_CACHE_TTL:-300}
       SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-2592000}
       SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-favsongs_session}
-      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-true}
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
       SESSION_COOKIE_SAMESITE: ${SESSION_COOKIE_SAMESITE:-lax}
       DEFAULT_PLAYLIST_NAME: ${DEFAULT_PLAYLIST_NAME:-Favourite Songs - Whatsit}
-      PLAYLIST_NAME_SUFFIX: ${PLAYLIST_NAME_SUFFIX:-}
+      PLAYLIST_NAME_SUFFIX: ${PLAYLIST_NAME_SUFFIX:-[HOME]}
+      LOCAL_ONLY_MODE: ${LOCAL_ONLY_MODE:-true}
+      ALLOWED_NETWORKS: ${ALLOWED_NETWORKS:-127.0.0.0/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,fe80::/10,fc00::/7}
+      TRUST_FORWARDED_FOR: ${TRUST_FORWARDED_FOR:-false}
+      MAX_CONNECTED_USERS: ${MAX_CONNECTED_USERS:-6}
       ADMIN_API_KEY: ${ADMIN_API_KEY:-}
-    expose:
-      - "8000"
+    ports:
+      - ${APP_PORT:-8080}:8000
     volumes:
       - favsongs_data:/app/data
     restart: unless-stopped
@@ -40,17 +44,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 20s
-
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    command: tunnel --no-autoupdate run --token ${CLOUDFLARED_TOKEN}
-    depends_on:
-      - favsongs
-    restart: unless-stopped
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
 
 volumes:
   favsongs_data:
