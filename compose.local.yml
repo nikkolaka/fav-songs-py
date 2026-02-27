@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   favsongs-local:
     build:
@@ -8,15 +6,8 @@ services:
     image: favsongs-web:local
     env_file:
       - .env.local
-    environment:
-      FAVSONGS_DATA_DIR: /app/data
-      FAVSONGS_DB_PATH: /app/data/favsongs-local.db
-      DEFAULT_PLAYLIST_NAME: ${DEFAULT_PLAYLIST_NAME:-Favourite Songs - Whatsit}
-      PLAYLIST_NAME_SUFFIX: ${PLAYLIST_NAME_SUFFIX:-[LOCAL]}
     ports:
       - "8000:8000"
-    volumes:
-      - favsongs_local_data:/app/data
     restart: unless-stopped
     init: true
     healthcheck:
@@ -25,6 +16,3 @@ services:
       timeout: 10s
       retries: 3
       start_period: 20s
-
-volumes:
-  favsongs_local_data:

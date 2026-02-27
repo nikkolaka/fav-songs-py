@@ -69,7 +69,7 @@ h2,
 .table th,
 label,
 .window-title,
-.slider-value,
+.slider-value-input,
 .status-pill {
   font-family: "Upheaval", "Silkscreen", monospace;
   text-transform: uppercase;
@@ -302,6 +302,13 @@ h2 {
   gap: 9px;
 }
 
+.search-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
 .select-wrap {
   min-width: 0;
   display: grid;
@@ -478,6 +485,7 @@ button:focus-visible {
   background:
     repeating-linear-gradient(90deg, rgba(255, 250, 255, 0.18) 0 2px, rgba(0, 0, 0, 0.16) 2px 4px),
     linear-gradient(90deg, #ded2e4, #9e8daa 45%, #6e6177);
+  transition: width 0.2s linear;
 }
 
 .progress-meta {
@@ -546,6 +554,55 @@ button:focus-visible {
   overflow-wrap: anywhere;
 }
 
+.profile-card {
+  min-width: 0;
+  padding: 10px;
+  display: grid;
+  grid-template-columns: clamp(80px, 9vw, 120px) minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.profile-avatar {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  border: 2px solid #8d7f97;
+  background:
+    repeating-linear-gradient(90deg, rgba(235, 227, 242, 0.12) 0 2px, rgba(90, 76, 99, 0.2) 2px 4px),
+    linear-gradient(145deg, #74667f, #3d3443 45%, #241f2a);
+}
+
+.profile-avatar-fallback {
+  display: grid;
+  place-items: center;
+  font-family: "Upheaval", "Silkscreen", monospace;
+  font-size: clamp(28px, 2vw, 40px);
+}
+
+.profile-meta {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.empty-panel {
+  min-height: 120px;
+  padding: 10px;
+  display: grid;
+  align-content: center;
+  gap: 8px;
+  color: var(--text-soft);
+}
+
+.empty-panel code {
+  font-size: 0.82em;
+}
+
+.playlist-stats {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .table-wrap {
   overflow: auto;
   max-width: 100%;
@@ -601,23 +658,36 @@ button:focus-visible {
 }
 
 .slider-track-wrap {
+  --tick-count: 2;
   --reference-pos: 50%;
   position: relative;
+}
+
+.slider-track-wrap::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  top: 5px;
+  height: 8px;
+  pointer-events: none;
+  opacity: 0.35;
+  background-image: linear-gradient(90deg, rgba(236, 227, 242, 0.4) 0 1px, transparent 1px 100%);
+  background-size: calc(100% / (var(--tick-count) - 1)) 100%;
+  background-repeat: repeat-x;
 }
 
 .slider-track-wrap::after {
   content: "";
   position: absolute;
-  top: 2px;
-  bottom: 2px;
+  top: 1px;
+  bottom: 1px;
   left: var(--reference-pos);
-  border-left: 2px dashed rgba(236, 227, 242, 0.6);
-  transform: translateX(-1px);
+  width: 3px;
+  transform: translateX(-1.5px);
+  background: rgba(245, 239, 249, 0.68);
+  box-shadow: 0 0 0 1px rgba(36, 29, 42, 0.85);
   pointer-events: none;
-}
-
-.slider-track-wrap.ref-2 {
-  --reference-pos: 2.35%;
 }
 
 .slider-track-wrap.ref-17 {
@@ -628,22 +698,47 @@ button:focus-visible {
   --reference-pos: 21.05%;
 }
 
+.slider-track-wrap.ref-50 {
+  --reference-pos: 50%;
+}
+
 .slider-track-wrap.ref-60 {
   --reference-pos: 60%;
 }
 
-.slider-value {
-  min-width: 72px;
+.slider-track-wrap.ticks-11 {
+  --tick-count: 11;
+}
+
+.slider-track-wrap.ticks-20 {
+  --tick-count: 20;
+}
+
+.slider-track-wrap.ticks-21 {
+  --tick-count: 21;
+}
+
+.slider-track-wrap.ticks-61 {
+  --tick-count: 61;
+}
+
+.slider-value-input {
+  width: 96px;
+  min-width: 96px;
   text-align: right;
-  font-size: clamp(10px, 0.68vw, 12px);
+  padding: 7px 9px;
+  font-size: clamp(20px, 1vw, 24px);
+  line-height: 1;
+  border: 2px solid #7a6b84;
+  background:
+    linear-gradient(180deg, rgba(232, 222, 240, 0.17) 0 1px, transparent 1px),
+    linear-gradient(180deg, #2a2430, #1d1a23);
   color: var(--accent);
 }
 
-.slider-reference {
-  margin-top: 2px;
-  color: var(--text-dim);
-  font-size: clamp(18px, 0.88vw, 22px);
-  line-height: 1;
+.slider-value-input::-webkit-outer-spin-button,
+.slider-value-input::-webkit-inner-spin-button {
+  margin: 0;
 }
 
 /* Pixel 32-bit style sliders */
@@ -776,7 +871,7 @@ input[type="range"]::-moz-range-thumb {
 
   .nav.nav-top {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .nav-link {
@@ -784,6 +879,10 @@ input[type="range"]::-moz-range-thumb {
   }
 
   .now-playing {
+    grid-template-columns: 1fr;
+  }
+
+  .profile-card {
     grid-template-columns: 1fr;
   }
 

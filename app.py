@@ -1,1121 +1,549 @@
-import asyncio
+import html
 import os
-import secrets
-import sqlite3
+import re
+import threading
 import time
 import urllib.parse
 from dataclasses import dataclass
-from threading import Lock
 from typing import Any, Dict, Optional
 
 import requests
-import spotipy
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware import Middleware
-from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
 
 load_dotenv()
 
-DEFAULT_PLAYLIST_NAME = "Favourite Songs - Whatsit"
+SPOTIFY_API_BASE = "https://api.spotify.com/v1"
+SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
+PROFILE_URL_RE = re.compile(r"(?:https?://)?open\.spotify\.com/user/([A-Za-z0-9_]+)", re.IGNORECASE)
+PROFILE_URI_RE = re.compile(r"spotify:user:([A-Za-z0-9_]+)", re.IGNORECASE)
 
 
 def _now_seconds() -> int:
     return int(time.time())
 
 
-def _now_millis() -> int:
-    return int(time.time() * 1000)
+def _normalize_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", value.lower())
 
 
 @dataclass(frozen=True)
 class AppConfig:
     client_id: str
     client_secret: str
-    redirect_uri: str
-    db_path: str
-    data_dir: str
-    oauth_scope: str
-    oauth_state_ttl_seconds: int
-    playlist_cache_ttl: int
-    session_ttl_seconds: int
-    session_cookie_name: str
-    session_cookie_secure: bool
-    session_cookie_samesite: str
-    default_playlist_name: str
-    playlist_name_suffix: str
-    admin_api_key: Optional[str]
+    http_timeout_seconds: float
+    token_skew_seconds: int
+    max_lookup_candidates: int
+    max_public_playlists: int
+    max_liked_playlists: int
+    max_tracks_per_liked_playlist: int
+    default_playlist_track_limit: int
+    liked_playlist_keywords: tuple[str, ...]
 
     @classmethod
     def from_env(cls) -> "AppConfig":
-        missing = [
-            name
-            for name in ("CLIENT_ID", "CLIENT_SECRET", "REDIRECT_URI")
-            if not os.getenv(name)
-        ]
+        missing = [name for name in ("CLIENT_ID", "CLIENT_SECRET") if not os.getenv(name)]
         if missing:
-            missing_list = ", ".join(missing)
-            raise RuntimeError(f"Missing required environment variables: {missing_list}")
+            raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")
 
-        data_dir = os.getenv("FAVSONGS_DATA_DIR", "data")
-        db_path = os.getenv("FAVSONGS_DB_PATH", os.path.join(data_dir, "favsongs.db"))
+        raw_keywords = os.getenv(
+            "LIKED_PLAYLIST_KEYWORDS",
+            "liked,favorite,favourites,favorites,saved,heart,hearts",
+        )
+        keywords = tuple(
+            dict.fromkeys(k.strip().lower() for k in raw_keywords.split(",") if k.strip())
+        )
 
         return cls(
             client_id=os.environ["CLIENT_ID"],
             client_secret=os.environ["CLIENT_SECRET"],
-            redirect_uri=os.environ["REDIRECT_URI"],
-            db_path=db_path,
-            data_dir=data_dir,
-            oauth_scope=os.getenv(
-                "SPOTIFY_SCOPE",
-                "user-read-playback-state,user-read-currently-playing,playlist-modify-public,playlist-modify-private",
+            http_timeout_seconds=float(os.getenv("SPOTIFY_HTTP_TIMEOUT_SECONDS", "20")),
+            token_skew_seconds=max(0, int(os.getenv("TOKEN_SKEW_SECONDS", "60"))),
+            max_lookup_candidates=max(3, int(os.getenv("MAX_LOOKUP_CANDIDATES", "12"))),
+            max_public_playlists=max(1, int(os.getenv("MAX_PUBLIC_PLAYLISTS", "200"))),
+            max_liked_playlists=max(1, int(os.getenv("MAX_LIKED_PLAYLISTS", "4"))),
+            max_tracks_per_liked_playlist=max(
+                1,
+                int(os.getenv("MAX_TRACKS_PER_LIKED_PLAYLIST", "75")),
             ),
-            oauth_state_ttl_seconds=int(os.getenv("OAUTH_STATE_TTL_SECONDS", "600")),
-            playlist_cache_ttl=int(os.getenv("PLAYLIST_CACHE_TTL", "300")),
-            session_ttl_seconds=int(os.getenv("SESSION_TTL_SECONDS", "2592000")),
-            session_cookie_name=os.getenv("SESSION_COOKIE_NAME", "favsongs_session"),
-            session_cookie_secure=os.getenv("SESSION_COOKIE_SECURE", "false").lower() == "true",
-            session_cookie_samesite=os.getenv("SESSION_COOKIE_SAMESITE", "lax"),
-            default_playlist_name=os.getenv("DEFAULT_PLAYLIST_NAME", DEFAULT_PLAYLIST_NAME),
-            playlist_name_suffix=os.getenv("PLAYLIST_NAME_SUFFIX", "").strip(),
-            admin_api_key=os.getenv("ADMIN_API_KEY"),
+            default_playlist_track_limit=max(
+                1,
+                int(os.getenv("DEFAULT_PLAYLIST_TRACK_LIMIT", "100")),
+            ),
+            liked_playlist_keywords=keywords,
         )
 
 
-class SessionAuthMiddleware(BaseHTTPMiddleware):
-    def __init__(
-        self,
-        app: FastAPI,
-        db: "Database",
-        cookie_name: str,
-        public_paths: Optional[set[str]] = None,
-    ):
-        super().__init__(app)
-        self.db = db
-        self.cookie_name = cookie_name
-        self.public_paths = public_paths or set()
-
-    def _is_public(self, path: str) -> bool:
-        if path in self.public_paths:
-            return True
-        return False
-
-    async def dispatch(self, request: Request, call_next):
-        request.state.user_id = None
-        path = request.url.path
-        if not (path.startswith("/api") or path.startswith("/me") or path.startswith("/auth")):
-            return await call_next(request)
-        if path.startswith("/api/accounts"):
-            return await call_next(request)
-        if self._is_public(path):
-            return await call_next(request)
-
-        session_id = request.cookies.get(self.cookie_name)
-        if not session_id:
-            return JSONResponse(status_code=401, content={"detail": "Authentication required"})
-
-        session = self.db.get_session(session_id)
-        if not session:
-            return JSONResponse(status_code=401, content={"detail": "Authentication required"})
-
-        if int(session["expires_at"]) < _now_seconds():
-            self.db.delete_session(session_id)
-            return JSONResponse(status_code=401, content={"detail": "Session expired"})
-
-        self.db.touch_session(session_id)
-        request.state.user_id = session["user_id"]
-
-        return await call_next(request)
-
-
-class Database:
-    def __init__(self, db_path: str, default_playlist_name: str = DEFAULT_PLAYLIST_NAME):
-        db_dir = os.path.dirname(db_path) or "."
-        os.makedirs(db_dir, exist_ok=True)
-        self.conn = sqlite3.connect(db_path, check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
-        self.lock = Lock()
-        self.default_playlist_name = default_playlist_name.strip() or DEFAULT_PLAYLIST_NAME
-        self._init_schema()
-
-    def _init_schema(self) -> None:
-        with self.lock:
-            self.conn.executescript(
-                """
-                PRAGMA foreign_keys = ON;
-
-                CREATE TABLE IF NOT EXISTS users (
-                    id TEXT PRIMARY KEY,
-                    spotify_user_id TEXT NOT NULL UNIQUE,
-                    display_name TEXT NOT NULL,
-                    created_at INTEGER NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS tokens (
-                    user_id TEXT PRIMARY KEY,
-                    access_token TEXT NOT NULL,
-                    refresh_token TEXT NOT NULL,
-                    expires_at INTEGER NOT NULL,
-                    updated_at INTEGER NOT NULL,
-                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-                );
-
-                CREATE TABLE IF NOT EXISTS user_settings (
-                    user_id TEXT PRIMARY KEY,
-                    favorite_threshold INTEGER NOT NULL DEFAULT 5,
-                    min_completion_ratio REAL NOT NULL DEFAULT 0.8,
-                    check_interval INTEGER NOT NULL DEFAULT 10,
-                    min_play_gap_ms INTEGER NOT NULL DEFAULT 300000,
-                    playlist_name TEXT NOT NULL DEFAULT 'Favourite Songs - Whatsit',
-                    playlist_public INTEGER NOT NULL DEFAULT 1,
-                    auto_add_enabled INTEGER NOT NULL DEFAULT 1,
-                    playlist_id TEXT,
-                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-                );
-
-                CREATE TABLE IF NOT EXISTS tracker_state (
-                    user_id TEXT PRIMARY KEY,
-                    running INTEGER NOT NULL DEFAULT 0,
-                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-                );
-
-                CREATE TABLE IF NOT EXISTS tracks (
-                    track_id TEXT PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    artist TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS plays (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id TEXT NOT NULL,
-                    track_id TEXT NOT NULL,
-                    play_instance_id TEXT,
-                    played_at INTEGER NOT NULL,
-                    completed INTEGER NOT NULL DEFAULT 1,
-                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
-                    FOREIGN KEY(track_id) REFERENCES tracks(track_id) ON DELETE CASCADE,
-                    UNIQUE(user_id, play_instance_id)
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_plays_user_played_at ON plays (user_id, played_at DESC);
-
-                CREATE TABLE IF NOT EXISTS favorites (
-                    user_id TEXT NOT NULL,
-                    track_id TEXT NOT NULL,
-                    occurrences INTEGER NOT NULL DEFAULT 0,
-                    last_played INTEGER NOT NULL DEFAULT 0,
-                    PRIMARY KEY(user_id, track_id),
-                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
-                    FOREIGN KEY(track_id) REFERENCES tracks(track_id) ON DELETE CASCADE
-                );
-
-                CREATE TABLE IF NOT EXISTS oauth_states (
-                    state TEXT PRIMARY KEY,
-                    expires_at INTEGER NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS sessions (
-                    id TEXT PRIMARY KEY,
-                    user_id TEXT NOT NULL,
-                    created_at INTEGER NOT NULL,
-                    expires_at INTEGER NOT NULL,
-                    last_seen INTEGER NOT NULL,
-                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions (user_id);
-                """
-            )
-            self.conn.commit()
-
-    def close(self) -> None:
-        with self.lock:
-            self.conn.close()
-
-    def _row_to_dict(self, row: Optional[sqlite3.Row]) -> Optional[Dict[str, Any]]:
-        return dict(row) if row else None
-
-    def ensure_user_defaults(self, user_id: str) -> None:
-        with self.lock:
-            self.conn.execute(
-                """
-                INSERT INTO user_settings (user_id, playlist_name)
-                VALUES (?, ?)
-                ON CONFLICT(user_id) DO NOTHING
-                """,
-                (user_id, self.default_playlist_name),
-            )
-            self.conn.execute(
-                """
-                INSERT INTO tracker_state (user_id, running)
-                VALUES (?, 0)
-                ON CONFLICT(user_id) DO NOTHING
-                """,
-                (user_id,),
-            )
-            self.conn.commit()
-
-    def get_user(self, user_id: str) -> Optional[Dict[str, Any]]:
-        with self.lock:
-            row = self.conn.execute(
-                "SELECT id, spotify_user_id, display_name, created_at FROM users WHERE id = ?",
-                (user_id,),
-            ).fetchone()
-        return self._row_to_dict(row)
-
-    def upsert_user(self, spotify_user_id: str, display_name: str) -> Dict[str, Any]:
-        with self.lock:
-            existing = self.conn.execute(
-                "SELECT id FROM users WHERE spotify_user_id = ?",
-                (spotify_user_id,),
-            ).fetchone()
-
-            now = _now_seconds()
-            if existing:
-                user_id = existing["id"]
-                self.conn.execute(
-                    "UPDATE users SET display_name = ? WHERE id = ?",
-                    (display_name, user_id),
-                )
-            else:
-                user_id = secrets.token_urlsafe(16)
-                self.conn.execute(
-                    """
-                    INSERT INTO users (id, spotify_user_id, display_name, created_at)
-                    VALUES (?, ?, ?, ?)
-                    """,
-                    (user_id, spotify_user_id, display_name, now),
-                )
-            self.conn.commit()
-
-        self.ensure_user_defaults(user_id)
-        user = self.get_user(user_id)
-        if not user:
-            raise RuntimeError("Could not upsert user")
-        return user
-
-    def list_accounts(self) -> list[Dict[str, Any]]:
-        with self.lock:
-            rows = self.conn.execute(
-                """
-                SELECT u.id, u.spotify_user_id, u.display_name, u.created_at,
-                       COALESCE(ts.running, 0) AS tracker_running
-                FROM users u
-                LEFT JOIN tracker_state ts ON ts.user_id = u.id
-                ORDER BY u.created_at ASC
-                """
-            ).fetchall()
-        accounts = []
-        for row in rows:
-            item = dict(row)
-            item["tracker_running"] = bool(item["tracker_running"])
-            accounts.append(item)
-        return accounts
-
-    def save_tokens(self, user_id: str, access_token: str, refresh_token: str, expires_at: int) -> None:
-        with self.lock:
-            self.conn.execute(
-                """
-                INSERT INTO tokens (user_id, access_token, refresh_token, expires_at, updated_at)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(user_id) DO UPDATE SET
-                    access_token = excluded.access_token,
-                    refresh_token = excluded.refresh_token,
-                    expires_at = excluded.expires_at,
-                    updated_at = excluded.updated_at
-                """,
-                (user_id, access_token, refresh_token, expires_at, _now_seconds()),
-            )
-            self.conn.commit()
-
-    def get_tokens(self, user_id: str) -> Optional[Dict[str, Any]]:
-        with self.lock:
-            row = self.conn.execute(
-                "SELECT user_id, access_token, refresh_token, expires_at FROM tokens WHERE user_id = ?",
-                (user_id,),
-            ).fetchone()
-        return self._row_to_dict(row)
-
-    def get_settings(self, user_id: str) -> Dict[str, Any]:
-        self.ensure_user_defaults(user_id)
-        with self.lock:
-            row = self.conn.execute(
-                """
-                SELECT user_id, favorite_threshold, min_completion_ratio, check_interval,
-                       min_play_gap_ms, playlist_name, playlist_public,
-                       auto_add_enabled, playlist_id
-                FROM user_settings
-                WHERE user_id = ?
-                """,
-                (user_id,),
-            ).fetchone()
-        if not row:
-            raise RuntimeError("Could not read settings")
-        settings = dict(row)
-        settings["playlist_public"] = bool(settings["playlist_public"])
-        settings["auto_add_enabled"] = bool(settings["auto_add_enabled"])
-        return settings
-
-    def update_settings(self, user_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
-        self.ensure_user_defaults(user_id)
-        if not updates:
-            return self.get_settings(user_id)
-
-        allowed_fields = {
-            "favorite_threshold",
-            "min_completion_ratio",
-            "check_interval",
-            "min_play_gap_ms",
-            "playlist_name",
-            "playlist_public",
-            "auto_add_enabled",
-            "playlist_id",
-        }
-
-        set_parts: list[str] = []
-        values: list[Any] = []
-
-        for key, value in updates.items():
-            if key not in allowed_fields:
-                continue
-            if key in {"playlist_public", "auto_add_enabled"}:
-                value = 1 if bool(value) else 0
-            set_parts.append(f"{key} = ?")
-            values.append(value)
-
-        if not set_parts:
-            return self.get_settings(user_id)
-
-        values.append(user_id)
-        with self.lock:
-            self.conn.execute(
-                f"UPDATE user_settings SET {', '.join(set_parts)} WHERE user_id = ?",
-                tuple(values),
-            )
-            self.conn.commit()
-
-        return self.get_settings(user_id)
-
-    def create_oauth_state(self, state: str, expires_at: int) -> None:
-        with self.lock:
-            self.conn.execute(
-                "DELETE FROM oauth_states WHERE expires_at < ?",
-                (_now_seconds(),),
-            )
-            self.conn.execute(
-                "INSERT INTO oauth_states (state, expires_at) VALUES (?, ?)",
-                (state, expires_at),
-            )
-            self.conn.commit()
-
-    def consume_oauth_state(self, state: str) -> bool:
-        now = _now_seconds()
-        with self.lock:
-            row = self.conn.execute(
-                "SELECT state, expires_at FROM oauth_states WHERE state = ?",
-                (state,),
-            ).fetchone()
-            if not row:
-                return False
-
-            self.conn.execute("DELETE FROM oauth_states WHERE state = ?", (state,))
-            self.conn.commit()
-
-        return row["expires_at"] >= now
-
-    def create_session(self, user_id: str, ttl_seconds: int) -> str:
-        session_id = secrets.token_urlsafe(32)
-        now = _now_seconds()
-        expires_at = now + int(ttl_seconds)
-        with self.lock:
-            self.conn.execute("DELETE FROM sessions WHERE expires_at < ?", (now,))
-            self.conn.execute(
-                """
-                INSERT INTO sessions (id, user_id, created_at, expires_at, last_seen)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (session_id, user_id, now, expires_at, now),
-            )
-            self.conn.commit()
-        return session_id
-
-    def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
-        with self.lock:
-            row = self.conn.execute(
-                "SELECT id, user_id, expires_at, last_seen FROM sessions WHERE id = ?",
-                (session_id,),
-            ).fetchone()
-        return self._row_to_dict(row)
-
-    def touch_session(self, session_id: str) -> None:
-        with self.lock:
-            self.conn.execute(
-                "UPDATE sessions SET last_seen = ? WHERE id = ?",
-                (_now_seconds(), session_id),
-            )
-            self.conn.commit()
-
-    def delete_session(self, session_id: str) -> None:
-        with self.lock:
-            self.conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
-            self.conn.commit()
-
-    def list_running_user_ids(self) -> list[str]:
-        with self.lock:
-            rows = self.conn.execute(
-                "SELECT user_id FROM tracker_state WHERE running = 1"
-            ).fetchall()
-        return [row["user_id"] for row in rows]
-
-    def set_tracker_running(self, user_id: str, running: bool) -> None:
-        self.ensure_user_defaults(user_id)
-        with self.lock:
-            self.conn.execute(
-                "UPDATE tracker_state SET running = ? WHERE user_id = ?",
-                (1 if running else 0, user_id),
-            )
-            self.conn.commit()
-
-    def is_tracker_running(self, user_id: str) -> bool:
-        self.ensure_user_defaults(user_id)
-        with self.lock:
-            row = self.conn.execute(
-                "SELECT running FROM tracker_state WHERE user_id = ?",
-                (user_id,),
-            ).fetchone()
-        return bool(row and row["running"])
-
-    def _upsert_track(self, track_id: str, name: str, artist: str) -> None:
-        self.conn.execute(
-            """
-            INSERT INTO tracks (track_id, name, artist)
-            VALUES (?, ?, ?)
-            ON CONFLICT(track_id) DO UPDATE SET
-                name = excluded.name,
-                artist = excluded.artist
-            """,
-            (track_id, name, artist),
-        )
-
-    def record_completed_play(
-        self,
-        user_id: str,
-        track_id: str,
-        name: str,
-        artist: str,
-        played_at: int,
-        play_instance_id: Optional[str],
-        min_play_gap_ms: int,
-    ) -> Optional[int]:
-        with self.lock:
-            self._upsert_track(track_id, name, artist)
-
-            if not play_instance_id:
-                play_instance_id = f"{track_id}:{played_at}"
-
-            existing_play = self.conn.execute(
-                "SELECT 1 FROM plays WHERE user_id = ? AND play_instance_id = ?",
-                (user_id, play_instance_id),
-            ).fetchone()
-            if existing_play:
-                self.conn.commit()
-                return None
-
-            favorite_row = self.conn.execute(
-                """
-                SELECT occurrences, last_played
-                FROM favorites
-                WHERE user_id = ? AND track_id = ?
-                """,
-                (user_id, track_id),
-            ).fetchone()
-
-            if favorite_row and (played_at - favorite_row["last_played"]) <= min_play_gap_ms:
-                self.conn.commit()
-                return None
-
-            try:
-                self.conn.execute(
-                    """
-                    INSERT INTO plays (user_id, track_id, play_instance_id, played_at, completed)
-                    VALUES (?, ?, ?, ?, 1)
-                    """,
-                    (user_id, track_id, play_instance_id, played_at),
-                )
-            except sqlite3.IntegrityError:
-                self.conn.commit()
-                return None
-
-            if favorite_row:
-                occurrences = int(favorite_row["occurrences"]) + 1
-                self.conn.execute(
-                    """
-                    UPDATE favorites
-                    SET occurrences = ?, last_played = ?
-                    WHERE user_id = ? AND track_id = ?
-                    """,
-                    (occurrences, played_at, user_id, track_id),
-                )
-            else:
-                occurrences = 1
-                self.conn.execute(
-                    """
-                    INSERT INTO favorites (user_id, track_id, occurrences, last_played)
-                    VALUES (?, ?, ?, ?)
-                    """,
-                    (user_id, track_id, occurrences, played_at),
-                )
-
-            self.conn.commit()
-            return occurrences
-
-    def count_plays_since(self, user_id: str, since_ms: int) -> int:
-        with self.lock:
-            row = self.conn.execute(
-                """
-                SELECT COUNT(*) AS cnt
-                FROM plays
-                WHERE user_id = ? AND played_at >= ?
-                """,
-                (user_id, since_ms),
-            ).fetchone()
-        return int(row["cnt"] if row else 0)
-
-    def max_occurrence(self, user_id: str) -> int:
-        with self.lock:
-            row = self.conn.execute(
-                "SELECT COALESCE(MAX(occurrences), 0) AS max_occ FROM favorites WHERE user_id = ?",
-                (user_id,),
-            ).fetchone()
-        return int(row["max_occ"] if row else 0)
-
-    def recent_plays(self, user_id: str, limit: int = 10) -> list[Dict[str, Any]]:
-        with self.lock:
-            rows = self.conn.execute(
-                """
-                SELECT p.track_id, t.name, t.artist, p.played_at
-                FROM plays p
-                JOIN tracks t ON t.track_id = p.track_id
-                WHERE p.user_id = ?
-                ORDER BY p.played_at DESC
-                LIMIT ?
-                """,
-                (user_id, limit),
-            ).fetchall()
-        return [dict(row) for row in rows]
-
-    def favorites(self, user_id: str, limit: int = 200) -> list[Dict[str, Any]]:
-        with self.lock:
-            rows = self.conn.execute(
-                """
-                SELECT f.track_id, t.name, t.artist, f.occurrences, f.last_played
-                FROM favorites f
-                JOIN tracks t ON t.track_id = f.track_id
-                WHERE f.user_id = ?
-                ORDER BY f.occurrences DESC, f.last_played DESC
-                LIMIT ?
-                """,
-                (user_id, limit),
-            ).fetchall()
-        return [dict(row) for row in rows]
-
-
-class SpotifyService:
-    def __init__(self, config: AppConfig, db: Database):
+class SpotifyPublicService:
+    def __init__(self, config: AppConfig):
         self.config = config
-        self.db = db
+        self._token_lock = threading.Lock()
+        self._cached_access_token: Optional[str] = None
+        self._cached_token_expires_at = 0
 
-    def _token_request(self, payload: Dict[str, str]) -> Dict[str, Any]:
+    def _fetch_access_token(self) -> tuple[str, int]:
         response = requests.post(
-            "https://accounts.spotify.com/api/token",
-            data=payload,
+            SPOTIFY_TOKEN_URL,
+            data={"grant_type": "client_credentials"},
             auth=(self.config.client_id, self.config.client_secret),
-            timeout=20,
+            timeout=self.config.http_timeout_seconds,
         )
 
         if response.status_code >= 400:
             raise HTTPException(
-                status_code=400,
+                status_code=502,
                 detail=f"Spotify token request failed ({response.status_code}): {response.text}",
             )
 
-        return response.json()
+        payload = response.json()
+        access_token = payload.get("access_token")
+        expires_in = int(payload.get("expires_in", 3600))
+        if not access_token:
+            raise HTTPException(status_code=502, detail="Spotify token response missing access_token")
 
-    def exchange_code(self, code: str) -> Dict[str, Any]:
-        payload = {
-            "grant_type": "authorization_code",
-            "code": code,
-            "redirect_uri": self.config.redirect_uri,
-        }
-        return self._token_request(payload)
+        return str(access_token), _now_seconds() + expires_in
 
-    def refresh_access_token(self, user_id: str) -> Dict[str, Any]:
-        tokens = self.db.get_tokens(user_id)
-        if not tokens:
-            raise HTTPException(status_code=400, detail="Spotify account is not connected for this user")
+    def _access_token(self) -> str:
+        with self._token_lock:
+            remaining = self._cached_token_expires_at - _now_seconds()
+            if self._cached_access_token and remaining > self.config.token_skew_seconds:
+                return self._cached_access_token
 
-        payload = {
-            "grant_type": "refresh_token",
-            "refresh_token": tokens["refresh_token"],
-        }
-        token_data = self._token_request(payload)
-        access_token = token_data["access_token"]
-        refresh_token = token_data.get("refresh_token", tokens["refresh_token"])
-        expires_at = _now_seconds() + int(token_data.get("expires_in", 3600))
+            token, expires_at = self._fetch_access_token()
+            self._cached_access_token = token
+            self._cached_token_expires_at = expires_at
+            return token
 
-        self.db.save_tokens(user_id, access_token, refresh_token, expires_at)
-        return {
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "expires_at": expires_at,
-        }
+    def _reset_cached_token(self) -> None:
+        with self._token_lock:
+            self._cached_access_token = None
+            self._cached_token_expires_at = 0
 
-    def get_valid_access_token(self, user_id: str) -> str:
-        tokens = self.db.get_tokens(user_id)
-        if not tokens:
-            raise HTTPException(status_code=400, detail="Spotify account is not connected for this user")
-
-        if int(tokens["expires_at"]) > (_now_seconds() + 60):
-            return str(tokens["access_token"])
-
-        refreshed = self.refresh_access_token(user_id)
-        return str(refreshed["access_token"])
-
-    def spotify_client(self, user_id: str) -> spotipy.Spotify:
-        access_token = self.get_valid_access_token(user_id)
-        return spotipy.Spotify(auth=access_token, requests_timeout=20)
-
-    def spotify_profile(self, access_token: str) -> Dict[str, Any]:
+    def _api_get(
+        self,
+        path: str,
+        params: Optional[Dict[str, Any]] = None,
+        *,
+        retry_on_auth_error: bool = True,
+    ) -> Dict[str, Any]:
+        token = self._access_token()
         response = requests.get(
-            "https://api.spotify.com/v1/me",
-            headers={"Authorization": f"Bearer {access_token}"},
-            timeout=20,
+            f"{SPOTIFY_API_BASE}/{path.lstrip('/')}",
+            headers={"Authorization": f"Bearer {token}"},
+            params=params,
+            timeout=self.config.http_timeout_seconds,
         )
+
+        if response.status_code == 401 and retry_on_auth_error:
+            self._reset_cached_token()
+            return self._api_get(path, params, retry_on_auth_error=False)
+
+        if response.status_code == 404:
+            raise HTTPException(status_code=404, detail="Spotify resource not found")
+
         if response.status_code >= 400:
             raise HTTPException(
-                status_code=400,
-                detail=f"Could not load Spotify profile ({response.status_code}): {response.text}",
+                status_code=502,
+                detail=f"Spotify API request failed ({response.status_code}): {response.text}",
             )
-        return response.json()
-
-    def build_auth_url(self, state: str) -> str:
-        query = urllib.parse.urlencode(
-            {
-                "response_type": "code",
-                "client_id": self.config.client_id,
-                "redirect_uri": self.config.redirect_uri,
-                "scope": self.config.oauth_scope,
-                "state": state,
-                "show_dialog": "true",
-            }
-        )
-        return f"https://accounts.spotify.com/authorize?{query}"
-
-
-@dataclass
-class RuntimeTrackState:
-    current_track_id: Optional[str] = None
-    current_track_name: Optional[str] = None
-    current_track_artist: Optional[str] = None
-    current_track_progress_ms: int = 0
-    current_track_duration_ms: int = 0
-    current_track_timestamp_ms: int = 0
-    current_play_instance_id: Optional[str] = None
-
-
-class TrackerManager:
-    def __init__(
-        self,
-        db: Database,
-        spotify_service: SpotifyService,
-        playlist_cache_ttl: int,
-        playlist_name_suffix: str = "",
-    ):
-        self.db = db
-        self.spotify_service = spotify_service
-        self.playlist_cache_ttl = playlist_cache_ttl
-        self.playlist_name_suffix = playlist_name_suffix.strip()
-        self.tasks: Dict[str, asyncio.Task] = {}
-        self.runtime: Dict[str, RuntimeTrackState] = {}
-        self.playlist_cache: Dict[str, Dict[str, Any]] = {}
-
-    async def start_saved_trackers(self) -> None:
-        for user_id in self.db.list_running_user_ids():
-            await self.start(user_id)
-
-    async def start(self, user_id: str) -> None:
-        if user_id in self.tasks and not self.tasks[user_id].done():
-            self.db.set_tracker_running(user_id, True)
-            return
-
-        if not self.db.get_user(user_id):
-            raise HTTPException(status_code=404, detail="Unknown account")
-
-        self.db.set_tracker_running(user_id, True)
-        task = asyncio.create_task(self._run_loop(user_id), name=f"tracker-{user_id}")
-        self.tasks[user_id] = task
-
-    async def stop(self, user_id: str) -> None:
-        self.db.set_tracker_running(user_id, False)
-        task = self.tasks.pop(user_id, None)
-        if task:
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-
-    async def shutdown(self) -> None:
-        for user_id in list(self.tasks.keys()):
-            await self.stop(user_id)
-
-    def _derive_play_instance_id(self, track_id: str, timestamp_ms: int, progress_ms: int) -> Optional[str]:
-        if not track_id or not timestamp_ms:
-            return None
-        start_ms = max(timestamp_ms - progress_ms, 0)
-        return f"{track_id}:{start_ms}"
-
-    def _is_completed(self, progress_ms: int, duration_ms: int, min_completion_ratio: float) -> bool:
-        if duration_ms <= 0:
-            return False
-        return (progress_ms / duration_ms) >= min_completion_ratio
-
-    def _effective_playlist_name(self, configured_name: str) -> str:
-        base_name = configured_name.strip() or self.db.default_playlist_name
-        if not self.playlist_name_suffix:
-            return base_name
-        if base_name.endswith(self.playlist_name_suffix):
-            return base_name
-        return f"{base_name} {self.playlist_name_suffix}".strip()
-
-    def _resolve_playlist_id(self, user_id: str, sp: spotipy.Spotify, settings: Dict[str, Any]) -> Optional[str]:
-        configured_name = str(settings.get("playlist_name") or self.db.default_playlist_name)
-        playlist_name = self._effective_playlist_name(configured_name)
-
-        existing_playlist_id = settings.get("playlist_id")
-        if existing_playlist_id and not self.playlist_name_suffix:
-            return str(existing_playlist_id)
-        if existing_playlist_id:
-            try:
-                playlist = sp.playlist(str(existing_playlist_id), fields="id,name")
-                if playlist and playlist.get("name") == playlist_name:
-                    return str(existing_playlist_id)
-            except Exception:
-                pass
-            self.db.update_settings(user_id, {"playlist_id": None})
-
-        profile = sp.me()
-        spotify_user_id = profile.get("id")
-        if not spotify_user_id:
-            return None
-
-        playlist_public = bool(settings.get("playlist_public", True))
-
-        results = sp.user_playlists(spotify_user_id, limit=50)
-        while results:
-            for playlist in results.get("items", []):
-                if playlist and playlist.get("name") == playlist_name:
-                    playlist_id = playlist.get("id")
-                    if playlist_id:
-                        self.db.update_settings(user_id, {"playlist_id": playlist_id})
-                        return str(playlist_id)
-            if results.get("next"):
-                results = sp.next(results)
-            else:
-                break
-
-        created = sp.user_playlist_create(
-            spotify_user_id,
-            playlist_name,
-            public=playlist_public,
-            description="Auto-managed by FavSongs multi-account tracker",
-        )
-        playlist_id = created.get("id")
-        if playlist_id:
-            self.db.update_settings(user_id, {"playlist_id": playlist_id})
-            return str(playlist_id)
-        return None
-
-    def _get_playlist_tracks_cached(self, user_id: str, playlist_id: str, sp: spotipy.Spotify) -> set[str]:
-        cached = self.playlist_cache.get(user_id)
-        now = time.time()
-        if (
-            cached
-            and cached.get("playlist_id") == playlist_id
-            and (now - float(cached.get("cached_at", 0))) < self.playlist_cache_ttl
-        ):
-            return cached["track_ids"]
-
-        track_ids: set[str] = set()
-        results = sp.playlist_tracks(playlist_id, limit=100)
-        while results:
-            for item in results.get("items", []):
-                track = item.get("track") if item else None
-                track_id = track.get("id") if track else None
-                if track_id:
-                    track_ids.add(track_id)
-            if results.get("next"):
-                results = sp.next(results)
-            else:
-                break
-
-        self.playlist_cache[user_id] = {
-            "playlist_id": playlist_id,
-            "track_ids": track_ids,
-            "cached_at": now,
-        }
-        return track_ids
-
-    def add_track_to_playlist(self, user_id: str, track_id: str, allow_duplicate: bool = False) -> bool:
-        settings = self.db.get_settings(user_id)
-        sp = self.spotify_service.spotify_client(user_id)
-        playlist_id = self._resolve_playlist_id(user_id, sp, settings)
-        if not playlist_id:
-            return False
-
-        existing_ids = self._get_playlist_tracks_cached(user_id, playlist_id, sp)
-        if not allow_duplicate and track_id in existing_ids:
-            return False
-
-        sp.playlist_add_items(playlist_id, [track_id], position=0)
-        existing_ids.add(track_id)
-        return True
-
-    def _finalize_current_track(self, user_id: str, state: RuntimeTrackState) -> None:
-        if not state.current_track_id or not state.current_track_name or not state.current_track_artist:
-            return
-
-        settings = self.db.get_settings(user_id)
-        completed = self._is_completed(
-            state.current_track_progress_ms,
-            state.current_track_duration_ms,
-            float(settings["min_completion_ratio"]),
-        )
-        if not completed:
-            return
-
-        played_at = state.current_track_timestamp_ms or _now_millis()
-        occurrences = self.db.record_completed_play(
-            user_id=user_id,
-            track_id=state.current_track_id,
-            name=state.current_track_name,
-            artist=state.current_track_artist,
-            played_at=played_at,
-            play_instance_id=state.current_play_instance_id,
-            min_play_gap_ms=int(settings["min_play_gap_ms"]),
-        )
-
-        if not occurrences:
-            return
-
-        should_auto_add = bool(settings["auto_add_enabled"]) and occurrences >= int(settings["favorite_threshold"])
-        if should_auto_add:
-            try:
-                self.add_track_to_playlist(user_id, state.current_track_id, allow_duplicate=False)
-            except Exception as exc:
-                print(f"[WARN] Could not auto-add track to playlist for {user_id}: {exc}")
-
-    def _set_current_track(
-        self,
-        state: RuntimeTrackState,
-        track_id: str,
-        track_name: str,
-        track_artist: str,
-        progress_ms: int,
-        duration_ms: int,
-        timestamp_ms: int,
-        play_instance_id: Optional[str],
-    ) -> None:
-        state.current_track_id = track_id
-        state.current_track_name = track_name
-        state.current_track_artist = track_artist
-        state.current_track_progress_ms = progress_ms
-        state.current_track_duration_ms = duration_ms
-        state.current_track_timestamp_ms = timestamp_ms
-        state.current_play_instance_id = play_instance_id
-
-    def _process_current_track(self, user_id: str, state: RuntimeTrackState) -> None:
-        sp = self.spotify_service.spotify_client(user_id)
-        playback = sp.current_playback()
-        if not playback:
-            return
-
-        track = playback.get("item")
-        if not track:
-            return
-
-        track_id = track.get("id")
-        if not track_id:
-            return
-
-        track_name = track.get("name") or "Unknown Track"
-        artists = track.get("artists") or []
-        first_artist = artists[0].get("name") if artists and artists[0] else "Unknown Artist"
-
-        progress_ms = int(playback.get("progress_ms") or 0)
-        duration_ms = int(track.get("duration_ms") or 0)
-        timestamp_ms = int(playback.get("timestamp") or _now_millis())
-        play_instance_id = self._derive_play_instance_id(track_id, timestamp_ms, progress_ms)
-
-        if state.current_track_id is None:
-            self._set_current_track(
-                state,
-                track_id,
-                track_name,
-                first_artist,
-                progress_ms,
-                duration_ms,
-                timestamp_ms,
-                play_instance_id,
-            )
-            return
-
-        if track_id != state.current_track_id:
-            self._finalize_current_track(user_id, state)
-            self._set_current_track(
-                state,
-                track_id,
-                track_name,
-                first_artist,
-                progress_ms,
-                duration_ms,
-                timestamp_ms,
-                play_instance_id,
-            )
-            return
-
-        restarted = (
-            state.current_play_instance_id
-            and play_instance_id
-            and play_instance_id != state.current_play_instance_id
-            and (progress_ms + 5000) < state.current_track_progress_ms
-        )
-        if restarted:
-            self._finalize_current_track(user_id, state)
-            self._set_current_track(
-                state,
-                track_id,
-                track_name,
-                first_artist,
-                progress_ms,
-                duration_ms,
-                timestamp_ms,
-                play_instance_id,
-            )
-            return
-
-        if progress_ms > state.current_track_progress_ms:
-            state.current_track_progress_ms = progress_ms
-        if duration_ms:
-            state.current_track_duration_ms = duration_ms
-        if timestamp_ms:
-            state.current_track_timestamp_ms = timestamp_ms
-        if play_instance_id:
-            state.current_play_instance_id = play_instance_id
-
-    async def _run_loop(self, user_id: str) -> None:
-        state = self.runtime.setdefault(user_id, RuntimeTrackState())
 
         try:
-            while self.db.is_tracker_running(user_id):
-                try:
-                    self._process_current_track(user_id, state)
-                except Exception as exc:
-                    print(f"[WARN] Tracker loop error for {user_id}: {exc}")
+            payload = response.json()
+        except ValueError as exc:
+            raise HTTPException(status_code=502, detail="Spotify API returned invalid JSON") from exc
 
-                settings = self.db.get_settings(user_id)
-                check_interval = max(int(settings["check_interval"]), 3)
-                await asyncio.sleep(check_interval)
-        except asyncio.CancelledError:
-            self._finalize_current_track(user_id, state)
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=502, detail="Unexpected Spotify API response format")
+
+        return payload
+
+    def _extract_user_id(self, query: str) -> Optional[str]:
+        raw = query.strip()
+        if not raw:
+            return None
+
+        match = PROFILE_URL_RE.search(raw)
+        if match:
+            return match.group(1)
+
+        match = PROFILE_URI_RE.search(raw)
+        if match:
+            return match.group(1)
+
+        if raw.startswith("@"):
+            raw = raw[1:]
+
+        if re.fullmatch(r"[A-Za-z0-9_]+", raw):
+            return raw
+
+        return None
+
+    def _format_profile(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        images = payload.get("images") or []
+        image_url = images[0].get("url") if images and isinstance(images[0], dict) else None
+        external = payload.get("external_urls") or {}
+        followers = payload.get("followers") or {}
+
+        return {
+            "id": payload.get("id"),
+            "display_name": payload.get("display_name") or payload.get("id") or "Unknown",
+            "external_url": external.get("spotify"),
+            "followers_total": int(followers.get("total") or 0),
+            "image_url": image_url,
+        }
+
+    def get_profile(self, user_id: str) -> Dict[str, Any]:
+        encoded_id = urllib.parse.quote(user_id, safe="")
+        profile = self._api_get(f"users/{encoded_id}")
+        return self._format_profile(profile)
+
+    def _try_get_profile(self, user_id: str) -> Optional[Dict[str, Any]]:
+        try:
+            return self.get_profile(user_id)
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                return None
             raise
-        finally:
-            self.tasks.pop(user_id, None)
 
+    def _score_candidate(self, query: str, profile: Dict[str, Any], source_weight: int) -> int:
+        normalized_query = _normalize_text(query.lstrip("@").strip())
+        normalized_id = _normalize_text(str(profile.get("id") or ""))
+        normalized_name = _normalize_text(str(profile.get("display_name") or ""))
+        score = source_weight
 
-class SettingsUpdate(BaseModel):
-    favorite_threshold: Optional[int] = Field(default=None, ge=1, le=20)
-    min_completion_ratio: Optional[float] = Field(default=None, ge=0.5, le=1.0)
-    check_interval: Optional[int] = Field(default=None, ge=3, le=300)
-    min_play_gap_ms: Optional[int] = Field(default=None, ge=0, le=86_400_000)
-    playlist_name: Optional[str] = Field(default=None, min_length=1, max_length=200)
-    playlist_public: Optional[bool] = None
-    auto_add_enabled: Optional[bool] = None
+        if normalized_query and normalized_query == normalized_id:
+            score += 100
+        elif normalized_query and normalized_query in normalized_id:
+            score += 45
 
+        if normalized_query and normalized_query == normalized_name:
+            score += 85
+        elif normalized_query and normalized_query in normalized_name:
+            score += 40
 
-def _format_now_playing(playback: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    if not playback:
-        return None
+        return score
 
-    track = playback.get("item")
-    if not track:
-        return None
+    def _search_owner_candidates(self, query: str, limit: int) -> list[str]:
+        payload = self._api_get(
+            "search",
+            params={
+                "q": query,
+                "type": "playlist",
+                "limit": max(1, min(50, limit)),
+            },
+        )
+        playlists = (payload.get("playlists") or {}).get("items") or []
 
-    artists = track.get("artists") or []
-    artist_name = artists[0].get("name") if artists and artists[0] else "Unknown Artist"
+        owner_ids: list[str] = []
+        seen_ids: set[str] = set()
+        for playlist in playlists:
+            if not isinstance(playlist, dict):
+                continue
+            owner = playlist.get("owner") or {}
+            owner_id = owner.get("id")
+            if not owner_id or owner_id in seen_ids:
+                continue
+            seen_ids.add(owner_id)
+            owner_ids.append(str(owner_id))
 
-    duration_ms = int(track.get("duration_ms") or 0)
-    progress_ms = int(playback.get("progress_ms") or 0)
+        return owner_ids
 
-    return {
-        "track_id": track.get("id"),
-        "name": track.get("name"),
-        "artist": artist_name,
-        "duration_ms": duration_ms,
-        "progress_ms": progress_ms,
-        "is_playing": bool(playback.get("is_playing")),
-        "completion_ratio": (progress_ms / duration_ms) if duration_ms > 0 else 0,
-    }
+    def resolve_user_candidates(self, query: str) -> list[Dict[str, Any]]:
+        cleaned_query = query.strip()
+        direct_user_id = self._extract_user_id(cleaned_query)
+
+        candidate_ids: list[tuple[str, int, str]] = []
+        if direct_user_id:
+            candidate_ids.append((direct_user_id, 130, "direct"))
+
+        for owner_id in self._search_owner_candidates(
+            cleaned_query,
+            self.config.max_lookup_candidates,
+        ):
+            candidate_ids.append((owner_id, 55, "playlist-search"))
+
+        seen: set[str] = set()
+        candidates: list[Dict[str, Any]] = []
+        for user_id, source_weight, source in candidate_ids:
+            if user_id in seen:
+                continue
+            seen.add(user_id)
+            profile = self._try_get_profile(user_id)
+            if not profile:
+                continue
+            score = self._score_candidate(cleaned_query, profile, source_weight)
+            candidates.append(
+                {
+                    "source": source,
+                    "score": score,
+                    "profile": profile,
+                }
+            )
+
+        candidates.sort(
+            key=lambda item: (
+                int(item["score"]),
+                int(item["profile"].get("followers_total") or 0),
+                str(item["profile"].get("id") or ""),
+            ),
+            reverse=True,
+        )
+        return candidates
+
+    def _format_playlist(self, payload: Dict[str, Any], selected_user_id: str) -> Dict[str, Any]:
+        owner = payload.get("owner") or {}
+        tracks_ref = payload.get("tracks") or {}
+        images = payload.get("images") or []
+        image_url = images[0].get("url") if images and isinstance(images[0], dict) else None
+        external = payload.get("external_urls") or {}
+        description = html.unescape(str(payload.get("description") or "")).strip()
+
+        owner_id = str(owner.get("id") or "")
+        owner_display = owner.get("display_name") or owner_id or "Unknown"
+
+        return {
+            "id": payload.get("id"),
+            "name": payload.get("name") or "Untitled playlist",
+            "description": description,
+            "tracks_total": int(tracks_ref.get("total") or 0),
+            "public": bool(payload.get("public")) if payload.get("public") is not None else None,
+            "collaborative": bool(payload.get("collaborative")),
+            "external_url": external.get("spotify"),
+            "image_url": image_url,
+            "owner": {
+                "id": owner_id,
+                "display_name": owner_display,
+            },
+            "relationship": "owned" if owner_id == selected_user_id else "followed_public",
+        }
+
+    def get_public_playlists(self, user_id: str, max_playlists: int) -> list[Dict[str, Any]]:
+        encoded_id = urllib.parse.quote(user_id, safe="")
+        playlists: list[Dict[str, Any]] = []
+        offset = 0
+
+        while len(playlists) < max_playlists:
+            page_size = min(50, max_playlists - len(playlists))
+            payload = self._api_get(
+                f"users/{encoded_id}/playlists",
+                params={"limit": page_size, "offset": offset},
+            )
+            items = payload.get("items") or []
+            if not items:
+                break
+
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                formatted = self._format_playlist(item, user_id)
+                if formatted.get("id"):
+                    playlists.append(formatted)
+                if len(playlists) >= max_playlists:
+                    break
+
+            if not payload.get("next"):
+                break
+            offset += len(items)
+
+        playlists.sort(
+            key=lambda item: (
+                item.get("relationship") != "owned",
+                -int(item.get("tracks_total") or 0),
+                str(item.get("name") or "").lower(),
+            )
+        )
+        return playlists
+
+    def get_playlist_tracks(self, playlist_id: str, limit: int) -> Dict[str, Any]:
+        encoded_id = urllib.parse.quote(playlist_id, safe="")
+        tracks: list[Dict[str, Any]] = []
+        offset = 0
+        total = 0
+
+        while len(tracks) < limit:
+            page_size = min(100, limit - len(tracks))
+            payload = self._api_get(
+                f"playlists/{encoded_id}/tracks",
+                params={
+                    "limit": page_size,
+                    "offset": offset,
+                    "fields": "items(track(id,name,duration_ms,explicit,external_urls,preview_url,artists(id,name),album(id,name,images))),next,total",
+                },
+            )
+
+            total = int(payload.get("total") or total or 0)
+            items = payload.get("items") or []
+            if not items:
+                break
+
+            for entry in items:
+                if not isinstance(entry, dict):
+                    continue
+                track = entry.get("track")
+                if not isinstance(track, dict):
+                    continue
+                track_id = track.get("id")
+                if not track_id:
+                    continue
+
+                artists = track.get("artists") or []
+                artist_names = [artist.get("name") for artist in artists if isinstance(artist, dict) and artist.get("name")]
+                album = track.get("album") or {}
+                album_images = album.get("images") or []
+                album_image_url = (
+                    album_images[0].get("url") if album_images and isinstance(album_images[0], dict) else None
+                )
+
+                tracks.append(
+                    {
+                        "id": track_id,
+                        "name": track.get("name") or "Unknown Track",
+                        "artists": artist_names,
+                        "duration_ms": int(track.get("duration_ms") or 0),
+                        "explicit": bool(track.get("explicit")),
+                        "album": {
+                            "id": album.get("id"),
+                            "name": album.get("name") or "Unknown Album",
+                            "image_url": album_image_url,
+                        },
+                        "external_url": (track.get("external_urls") or {}).get("spotify"),
+                        "preview_url": track.get("preview_url"),
+                    }
+                )
+
+                if len(tracks) >= limit:
+                    break
+
+            if not payload.get("next"):
+                break
+            offset += len(items)
+
+        return {
+            "playlist_id": playlist_id,
+            "total": total,
+            "tracks": tracks,
+        }
+
+    def _infer_liked_playlists(self, playlists: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+        liked: list[Dict[str, Any]] = []
+        keywords = self.config.liked_playlist_keywords
+
+        for playlist in playlists:
+            name = str(playlist.get("name") or "").lower()
+            description = str(playlist.get("description") or "").lower()
+            matched = [kw for kw in keywords if kw and (kw in name or kw in description)]
+            if not matched:
+                continue
+            enriched = dict(playlist)
+            enriched["matched_keywords"] = matched
+            liked.append(enriched)
+
+        liked.sort(key=lambda item: int(item.get("tracks_total") or 0), reverse=True)
+        return liked
+
+    def _collect_derived_liked_tracks(self, liked_playlists: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+        derived_tracks: list[Dict[str, Any]] = []
+        seen_track_ids: set[str] = set()
+
+        for playlist in liked_playlists[: self.config.max_liked_playlists]:
+            playlist_id = playlist.get("id")
+            if not playlist_id:
+                continue
+            payload = self.get_playlist_tracks(
+                playlist_id,
+                self.config.max_tracks_per_liked_playlist,
+            )
+            for track in payload.get("tracks", []):
+                track_id = track.get("id")
+                if not track_id or track_id in seen_track_ids:
+                    continue
+                seen_track_ids.add(track_id)
+                derived_tracks.append(
+                    {
+                        **track,
+                        "source_playlist": {
+                            "id": playlist_id,
+                            "name": playlist.get("name") or "Unknown playlist",
+                        },
+                    }
+                )
+
+        return derived_tracks
+
+    def lookup_public_account(self, query: str) -> Dict[str, Any]:
+        cleaned_query = query.strip()
+        if not cleaned_query:
+            raise HTTPException(status_code=400, detail="Query is required")
+
+        candidates = self.resolve_user_candidates(cleaned_query)
+        if not candidates:
+            raise HTTPException(
+                status_code=404,
+                detail="No public Spotify user could be resolved from that username/tag.",
+            )
+
+        selected = candidates[0]["profile"]
+        selected_user_id = str(selected.get("id") or "")
+        playlists = self.get_public_playlists(selected_user_id, self.config.max_public_playlists)
+
+        owned_playlists = [p for p in playlists if p.get("relationship") == "owned"]
+        followed_public_playlists = [p for p in playlists if p.get("relationship") == "followed_public"]
+        inferred_liked_playlists = self._infer_liked_playlists(playlists)
+        derived_liked_tracks = self._collect_derived_liked_tracks(inferred_liked_playlists)
+
+        return {
+            "query": cleaned_query,
+            "selected_user": selected,
+            "candidate_users": [
+                {
+                    "source": candidate["source"],
+                    "score": candidate["score"],
+                    "profile": candidate["profile"],
+                }
+                for candidate in candidates
+            ],
+            "playlists": {
+                "all": playlists,
+                "owned": owned_playlists,
+                "followed_public": followed_public_playlists,
+            },
+            "liked_songs": {
+                "available": False,
+                "reason": "Spotify does not expose another user's Liked Songs via the public Web API.",
+                "derived_from_public_playlists": inferred_liked_playlists,
+                "derived_tracks": derived_liked_tracks,
+            },
+            "following": {
+                "available": False,
+                "reason": "Spotify does not expose another user's followed artists/users via the public Web API.",
+                "public_followed_playlists": followed_public_playlists,
+            },
+            "stats": {
+                "playlists_total": len(playlists),
+                "owned_playlists_total": len(owned_playlists),
+                "followed_public_playlists_total": len(followed_public_playlists),
+                "inferred_liked_playlists_total": len(inferred_liked_playlists),
+                "derived_liked_tracks_total": len(derived_liked_tracks),
+            },
+            "limitations": [
+                "Spotify public API does not provide another user's private Liked Songs collection.",
+                "Spotify public API does not provide another user's following graph (artists/users).",
+                "Any 'liked songs' shown here are inferred from public playlists with liked/favorite-style naming.",
+            ],
+        }
 
 
 config = AppConfig.from_env()
-database = Database(config.db_path, default_playlist_name=config.default_playlist_name)
-spotify_service = SpotifyService(config, database)
-tracker_manager = TrackerManager(
-    database,
-    spotify_service,
-    config.playlist_cache_ttl,
-    config.playlist_name_suffix,
-)
-
-middleware = [
-    Middleware(
-        SessionAuthMiddleware,
-        db=database,
-        cookie_name=config.session_cookie_name,
-        public_paths={
-            "/healthz",
-            "/api/health",
-            "/api/auth/spotify/start",
-            "/api/auth/spotify/callback",
-            "/auth/spotify/start",
-            "/auth/spotify/callback",
-        },
-    )
-]
+spotify_service = SpotifyPublicService(config)
 
 app = FastAPI(
-    title="FavSongs",
+    title="FavSongs Public Explorer",
     docs_url=None,
     redoc_url=None,
     openapi_url=None,
-    middleware=middleware,
 )
-
-
-@app.on_event("startup")
-async def startup_event() -> None:
-    await tracker_manager.start_saved_trackers()
-
-
-@app.on_event("shutdown")
-async def shutdown_event() -> None:
-    await tracker_manager.shutdown()
-    database.close()
 
 
 @app.get("/healthz")
@@ -1128,277 +556,21 @@ async def api_health() -> Dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/api/accounts")
-async def list_accounts(request: Request) -> Dict[str, Any]:
-    _require_admin(request)
-    accounts = database.list_accounts()
-    return {"accounts": accounts}
+@app.get("/api/public/lookup")
+async def public_lookup(query: str = Query(..., min_length=2, max_length=200)) -> Dict[str, Any]:
+    return spotify_service.lookup_public_account(query)
 
 
-@app.post("/api/auth/spotify/start")
-@app.post("/auth/spotify/start")
-async def auth_spotify_start() -> Dict[str, str]:
-    state = secrets.token_urlsafe(32)
-    database.create_oauth_state(state, _now_seconds() + config.oauth_state_ttl_seconds)
-    return {"auth_url": spotify_service.build_auth_url(state)}
-
-
-@app.get("/api/auth/spotify/callback")
-@app.get("/auth/spotify/callback")
-async def auth_spotify_callback(code: Optional[str] = None, state: Optional[str] = None, error: Optional[str] = None):
-    if error:
-        return RedirectResponse(url="/?oauth=error")
-
-    if not code or not state:
-        raise HTTPException(status_code=400, detail="Missing OAuth code or state")
-
-    if not database.consume_oauth_state(state):
-        raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
-
-    token_data = spotify_service.exchange_code(code)
-    access_token = token_data.get("access_token")
-    refresh_token = token_data.get("refresh_token")
-    expires_in = int(token_data.get("expires_in", 3600))
-
-    if not access_token or not refresh_token:
-        raise HTTPException(status_code=400, detail="Spotify OAuth response missing token data")
-
-    profile = spotify_service.spotify_profile(access_token)
-    spotify_user_id = profile.get("id")
-    display_name = profile.get("display_name") or spotify_user_id
-
-    if not spotify_user_id:
-        raise HTTPException(status_code=400, detail="Spotify profile missing user id")
-
-    user = database.upsert_user(spotify_user_id=spotify_user_id, display_name=display_name)
-    database.save_tokens(
-        user_id=user["id"],
-        access_token=access_token,
-        refresh_token=refresh_token,
-        expires_at=_now_seconds() + expires_in,
-    )
-
-    session_id = database.create_session(user["id"], config.session_ttl_seconds)
-    response = RedirectResponse(url="/?oauth=connected")
-    response.set_cookie(
-        config.session_cookie_name,
-        session_id,
-        max_age=config.session_ttl_seconds,
-        httponly=True,
-        secure=config.session_cookie_secure,
-        samesite=config.session_cookie_samesite,
-    )
-    return response
-
-
-def _require_account(user_id: str) -> Dict[str, Any]:
-    account = database.get_user(user_id)
-    if not account:
-        raise HTTPException(status_code=404, detail="Account not found")
-    return account
-
-
-def _current_user_id(request: Request) -> str:
-    user_id = getattr(request.state, "user_id", None)
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    return str(user_id)
-
-
-def _require_admin(request: Request) -> None:
-    if not config.admin_api_key:
-        raise HTTPException(status_code=403, detail="Admin API disabled")
-    key = request.headers.get("X-Admin-Key")
-    if not key or not secrets.compare_digest(key, config.admin_api_key):
-        raise HTTPException(status_code=403, detail="Admin API key required")
-
-
-def _account_dashboard_payload(user_id: str) -> Dict[str, Any]:
-    account = _require_account(user_id)
-    settings = database.get_settings(user_id)
-
-    now_playing = None
-    try:
-        sp = spotify_service.spotify_client(user_id)
-        now_playing = _format_now_playing(sp.current_playback())
-    except Exception as exc:
-        now_playing = {"error": str(exc)}
-
-    plays_24h = database.count_plays_since(user_id, _now_millis() - 86_400_000)
-    max_occurrences = database.max_occurrence(user_id)
-    threshold = int(settings["favorite_threshold"])
-    next_favorite = max(threshold - max_occurrences, 0)
-
-    recent = [
-        {
-            "track_id": item["track_id"],
-            "name": item["name"],
-            "artist": item["artist"],
-            "played_at": item["played_at"],
-        }
-        for item in database.recent_plays(user_id, limit=8)
-    ]
-
-    return {
-        "account": {
-            "id": account["id"],
-            "spotify_user_id": account["spotify_user_id"],
-            "display_name": account["display_name"],
-            "tracker_running": database.is_tracker_running(user_id),
-        },
-        "now_playing": now_playing,
-        "stats": {
-            "tracks_counted_24h": plays_24h,
-            "completion_threshold": float(settings["min_completion_ratio"]),
-            "next_favorite": next_favorite,
-        },
-        "recent_plays": recent,
-    }
-
-
-@app.get("/api/accounts/{user_id}/dashboard")
-async def account_dashboard_admin(user_id: str, request: Request) -> Dict[str, Any]:
-    _require_admin(request)
-    return _account_dashboard_payload(user_id)
-
-
-@app.get("/api/me/dashboard")
-@app.get("/me/dashboard")
-async def me_dashboard(request: Request) -> Dict[str, Any]:
-    user_id = _current_user_id(request)
-    return _account_dashboard_payload(user_id)
-
-
-@app.get("/api/accounts/{user_id}/favorites")
-async def account_favorites_admin(user_id: str, request: Request) -> Dict[str, Any]:
-    _require_admin(request)
-    _require_account(user_id)
-    return {"favorites": database.favorites(user_id, limit=200)}
-
-
-@app.get("/api/me/favorites")
-@app.get("/me/favorites")
-async def me_favorites(request: Request) -> Dict[str, Any]:
-    user_id = _current_user_id(request)
-    _require_account(user_id)
-    return {"favorites": database.favorites(user_id, limit=200)}
-
-
-@app.post("/api/accounts/{user_id}/favorites/{track_id}/force-add")
-async def force_add_favorite_admin(user_id: str, track_id: str, request: Request) -> Dict[str, Any]:
-    _require_admin(request)
-    _require_account(user_id)
-    added = tracker_manager.add_track_to_playlist(user_id, track_id, allow_duplicate=True)
-    return {"queued": bool(added)}
-
-
-@app.post("/api/me/favorites/{track_id}/force-add")
-@app.post("/me/favorites/{track_id}/force-add")
-async def me_force_add_favorite(track_id: str, request: Request) -> Dict[str, Any]:
-    user_id = _current_user_id(request)
-    _require_account(user_id)
-    added = tracker_manager.add_track_to_playlist(user_id, track_id, allow_duplicate=True)
-    return {"queued": bool(added)}
-
-
-@app.get("/api/accounts/{user_id}/settings")
-async def account_settings_admin(user_id: str, request: Request) -> Dict[str, Any]:
-    _require_admin(request)
-    _require_account(user_id)
-    return database.get_settings(user_id)
-
-
-@app.get("/api/me/settings")
-@app.get("/me/settings")
-async def me_settings(request: Request) -> Dict[str, Any]:
-    user_id = _current_user_id(request)
-    _require_account(user_id)
-    return database.get_settings(user_id)
-
-
-def _apply_settings_update(user_id: str, payload: SettingsUpdate) -> Dict[str, Any]:
-    _require_account(user_id)
-    updates = payload.model_dump(exclude_none=True)
-
-    # Changing the playlist name should force playlist resolution from scratch.
-    if "playlist_name" in updates:
-        updates["playlist_id"] = None
-
-    updated = database.update_settings(user_id, updates)
-    return {"settings": updated}
-
-
-@app.post("/api/accounts/{user_id}/settings")
-async def update_account_settings_admin(user_id: str, payload: SettingsUpdate, request: Request) -> Dict[str, Any]:
-    _require_admin(request)
-    return _apply_settings_update(user_id, payload)
-
-
-@app.post("/api/me/settings")
-@app.post("/me/settings")
-async def update_me_settings(payload: SettingsUpdate, request: Request) -> Dict[str, Any]:
-    user_id = _current_user_id(request)
-    return _apply_settings_update(user_id, payload)
-
-
-@app.post("/api/accounts/{user_id}/tracker/start")
-async def start_tracker_admin(user_id: str, request: Request) -> Dict[str, bool]:
-    _require_admin(request)
-    _require_account(user_id)
-    await tracker_manager.start(user_id)
-    return {"running": True}
-
-
-@app.post("/api/me/tracker/start")
-@app.post("/me/tracker/start")
-async def me_start_tracker(request: Request) -> Dict[str, bool]:
-    user_id = _current_user_id(request)
-    _require_account(user_id)
-    await tracker_manager.start(user_id)
-    return {"running": True}
-
-
-@app.post("/api/accounts/{user_id}/tracker/stop")
-async def stop_tracker_admin(user_id: str, request: Request) -> Dict[str, bool]:
-    _require_admin(request)
-    _require_account(user_id)
-    await tracker_manager.stop(user_id)
-    return {"running": False}
-
-
-@app.post("/api/me/tracker/stop")
-@app.post("/me/tracker/stop")
-async def me_stop_tracker(request: Request) -> Dict[str, bool]:
-    user_id = _current_user_id(request)
-    _require_account(user_id)
-    await tracker_manager.stop(user_id)
-    return {"running": False}
-
-
-@app.get("/api/me")
-@app.get("/me")
-async def me(request: Request) -> Dict[str, Any]:
-    user_id = _current_user_id(request)
-    account = _require_account(user_id)
-    return {
-        "id": account["id"],
-        "spotify_user_id": account["spotify_user_id"],
-        "display_name": account["display_name"],
-        "tracker_running": database.is_tracker_running(user_id),
-    }
-
-
-@app.get("/api/me/now-playing")
-@app.get("/me/now-playing")
-async def me_now_playing(request: Request) -> Dict[str, Any]:
-    user_id = _current_user_id(request)
-    _require_account(user_id)
-    sp = spotify_service.spotify_client(user_id)
-    return {"now_playing": _format_now_playing(sp.current_playback())}
+@app.get("/api/public/playlists/{playlist_id}/tracks")
+async def public_playlist_tracks(
+    playlist_id: str,
+    limit: int = Query(default=config.default_playlist_track_limit, ge=1, le=500),
+) -> Dict[str, Any]:
+    return spotify_service.get_playlist_tracks(playlist_id, limit)
 
 
 @app.exception_handler(HTTPException)
-async def http_exception_handler(_: Request, exc: HTTPException):
+async def http_exception_handler(_: Request, exc: HTTPException) -> JSONResponse:
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 

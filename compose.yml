@@ -6,28 +6,21 @@ services:
       context: .
       dockerfile: Dockerfile
     pull_policy: build
-    container_name: favsongs-tracker
+    container_name: favsongs-public-explorer
     image: favsongs-web:latest
     environment:
       CLIENT_ID: ${CLIENT_ID}
       CLIENT_SECRET: ${CLIENT_SECRET}
-      REDIRECT_URI: ${REDIRECT_URI}
-      SPOTIFY_SCOPE: ${SPOTIFY_SCOPE:-user-read-playback-state,user-read-currently-playing,playlist-modify-public,playlist-modify-private}
-      FAVSONGS_DATA_DIR: /app/data
-      FAVSONGS_DB_PATH: /app/data/favsongs.db
-      OAUTH_STATE_TTL_SECONDS: ${OAUTH_STATE_TTL_SECONDS:-600}
-      PLAYLIST_CACHE_TTL: ${PLAYLIST_CACHE_TTL:-300}
-      SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-2592000}
-      SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-favsongs_session}
-      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
-      SESSION_COOKIE_SAMESITE: ${SESSION_COOKIE_SAMESITE:-lax}
-      DEFAULT_PLAYLIST_NAME: ${DEFAULT_PLAYLIST_NAME:-Favourite Songs - Whatsit}
-      PLAYLIST_NAME_SUFFIX: ${PLAYLIST_NAME_SUFFIX:-}
-      ADMIN_API_KEY: ${ADMIN_API_KEY:-}
+      SPOTIFY_HTTP_TIMEOUT_SECONDS: ${SPOTIFY_HTTP_TIMEOUT_SECONDS:-20}
+      TOKEN_SKEW_SECONDS: ${TOKEN_SKEW_SECONDS:-60}
+      MAX_LOOKUP_CANDIDATES: ${MAX_LOOKUP_CANDIDATES:-12}
+      MAX_PUBLIC_PLAYLISTS: ${MAX_PUBLIC_PLAYLISTS:-200}
+      MAX_LIKED_PLAYLISTS: ${MAX_LIKED_PLAYLISTS:-4}
+      MAX_TRACKS_PER_LIKED_PLAYLIST: ${MAX_TRACKS_PER_LIKED_PLAYLIST:-75}
+      DEFAULT_PLAYLIST_TRACK_LIMIT: ${DEFAULT_PLAYLIST_TRACK_LIMIT:-100}
+      LIKED_PLAYLIST_KEYWORDS: ${LIKED_PLAYLIST_KEYWORDS:-liked,favorite,favourites,favorites,saved,heart,hearts}
     ports:
       - "8080:8000"
-    volumes:
-      - favsongs_data:/app/data
     restart: unless-stopped
     init: true
     read_only: true
@@ -43,6 +36,3 @@ services:
       timeout: 10s
       retries: 3
       start_period: 20s
-
-volumes:
-  favsongs_data:

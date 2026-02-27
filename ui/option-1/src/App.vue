@@ -6,7 +6,7 @@
       <aside class="side-column panel-frame">
         <div class="brand-block panel-inset">
           <p class="brand-label">FavSongs</p>
-          <p class="brand-name">Super Secret Dashboard</p>
+          <p class="brand-name">Public Explorer</p>
         </div>
 
         <div class="status-block panel-inset">
@@ -14,10 +14,15 @@
           <div class="status-row">
             <span class="status-led" aria-hidden="true"></span>
             <div>
-              <p class="status-main" id="service-status">{{ serviceStatus }}</p>
-              <p class="status-sub" id="health-subtext">{{ healthSubtext }}</p>
+              <p class="status-main">{{ serviceStatus }}</p>
+              <p class="status-sub">{{ healthSubtext }}</p>
             </div>
           </div>
+        </div>
+
+        <div class="status-block panel-inset">
+          <p class="section-label">Current Account</p>
+          <p class="account-value">{{ accountLabel }}</p>
         </div>
       </aside>
 
@@ -26,7 +31,7 @@
           <div class="rack-line rack-title panel-inset">
             <div class="window-title">
               <span class="title-dot"></span>
-              <span>FavSongs v1.0</span>
+              <span>FavSongs Public Mode</span>
             </div>
             <div class="window-controls" aria-hidden="true">
               <span class="control-btn">_</span>
@@ -37,30 +42,38 @@
 
           <div class="rack-line rack-nav panel-inset">
             <p class="section-label">Mode</p>
-            <nav class="nav nav-top" aria-label="Primary mirror">
+            <nav class="nav nav-top" aria-label="Primary navigation">
               <button
                 class="nav-link"
-                :class="{ 'is-active': activeView === 'dashboard' }"
+                :class="{ 'is-active': activeView === 'profile' }"
                 type="button"
-                @click="setActiveView('dashboard')"
+                @click="setActiveView('profile')"
               >
-                Dashboard
+                Profile
               </button>
               <button
                 class="nav-link"
-                :class="{ 'is-active': activeView === 'favorites' }"
+                :class="{ 'is-active': activeView === 'playlists' }"
                 type="button"
-                @click="setActiveView('favorites')"
+                @click="setActiveView('playlists')"
               >
-                Favorites
+                Playlists
               </button>
               <button
                 class="nav-link"
-                :class="{ 'is-active': activeView === 'settings' }"
+                :class="{ 'is-active': activeView === 'liked' }"
                 type="button"
-                @click="setActiveView('settings')"
+                @click="setActiveView('liked')"
               >
-                Settings
+                Liked Songs
+              </button>
+              <button
+                class="nav-link"
+                :class="{ 'is-active': activeView === 'following' }"
+                type="button"
+                @click="setActiveView('following')"
+              >
+                Following
               </button>
             </nav>
             <div class="vu-meter" aria-hidden="true">
@@ -70,12 +83,34 @@
 
           <div class="rack-line rack-control panel-inset">
             <div class="select-wrap">
-              <label>Spotify Account</label>
-              <p class="account-value">{{ accountLabel }}</p>
+              <label for="profile-query">Spotify username, @tag, or profile URL</label>
+              <div class="search-row">
+                <input
+                  id="profile-query"
+                  v-model="searchQuery"
+                  type="text"
+                  placeholder="e.g. open.spotify.com/user/spotify"
+                  :disabled="loadingLookup"
+                  @keyup.enter="lookupProfile"
+                />
+                <button
+                  class="btn"
+                  type="button"
+                  :disabled="loadingLookup || !searchQuery.trim()"
+                  @click="lookupProfile"
+                >
+                  {{ loadingLookup ? "Searching..." : "Lookup" }}
+                </button>
+              </div>
             </div>
             <div class="rack-actions">
-              <button class="btn" id="connect-spotify" type="button" @click="connectSpotify">
-                Connect Spotify
+              <button
+                class="btn ghost"
+                type="button"
+                :disabled="loadingLookup || !hasResult"
+                @click="clearResults"
+              >
+                Clear
               </button>
             </div>
           </div>
@@ -85,81 +120,225 @@
           {{ globalMessage }}
         </p>
 
-        <section class="view" :class="{ hidden: activeView !== 'dashboard' }" data-view="dashboard">
+        <section class="view" :class="{ hidden: activeView !== 'profile' }">
           <div class="content-grid two-up">
             <article class="panel-frame feature-panel">
               <div class="panel-head">
-                <h2>Now Playing</h2>
-                <span class="status-pill" id="tracker-status">{{ trackerRunning ? "Running" : "Stopped" }}</span>
+                <h2>Selected Account</h2>
+                <span class="status-pill">{{ hasResult ? "Loaded" : "Idle" }}</span>
               </div>
 
-              <div class="now-playing panel-inset">
-                <div class="album-art" aria-hidden="true"></div>
-                <div>
-                  <p class="track-title" id="track-title">{{ dashboard.trackTitle }}</p>
-                  <p class="track-artist" id="track-artist">{{ dashboard.trackArtist }}</p>
+              <div v-if="selectedUser" class="profile-card panel-inset">
+                <img
+                  v-if="selectedUser.image_url"
+                  :src="selectedUser.image_url"
+                  :alt="selectedUser.display_name"
+                  class="profile-avatar"
+                />
+                <div v-else class="profile-avatar profile-avatar-fallback" aria-hidden="true">{{ avatarInitials }}</div>
 
-                  <div class="progress-slot">
-                    <div class="progress-bar" id="progress-bar" :style="{ width: progressBarWidth }"></div>
+                <div class="profile-meta">
+                  <p class="track-title">{{ selectedUser.display_name }}</p>
+                  <p class="track-artist">@{{ selectedUser.id }}</p>
+
+                  <div class="queue-list">
+                    <ul>
+                      <li>
+                        <span>Followers</span>
+                        <span>{{ formatNumber(selectedUser.followers_total) }}</span>
+                      </li>
+                      <li>
+                        <span>Public playlists</span>
+                        <span>{{ formatNumber(stats.playlists_total) }}</span>
+                      </li>
+                    </ul>
                   </div>
 
-                  <div class="progress-meta">
-                    <span id="progress-time">{{ progressTime }}</span>
-                    <span id="progress-total">{{ progressTotal }}</span>
-                  </div>
+                  <a v-if="selectedUser.external_url" class="btn ghost" :href="selectedUser.external_url" target="_blank" rel="noreferrer">
+                    Open On Spotify
+                  </a>
                 </div>
               </div>
 
-              <div class="panel-actions">
-                <button
-                  class="btn ghost"
-                  id="toggle-tracker"
-                  type="button"
-                  :disabled="!controlsEnabled"
-                  @click="toggleTracker"
-                >
-                  {{ trackerRunning ? "Stop Tracking" : "Start Tracking" }}
-                </button>
-                <button
-                  class="btn ghost"
-                  id="refresh-dashboard"
-                  type="button"
-                  :disabled="!controlsEnabled"
-                  @click="refreshDashboard"
-                >
-                  Refresh
-                </button>
+              <div v-else class="panel-inset empty-panel">
+                Search a username/tag to load public profile data.
               </div>
             </article>
 
             <article class="panel-frame">
-              <h2>Session Summary</h2>
+              <h2>Candidate Matches</h2>
+              <div class="table-wrap panel-inset">
+                <table class="table" aria-label="Candidate users">
+                  <thead>
+                    <tr>
+                      <th>Display name</th>
+                      <th>User ID</th>
+                      <th>Followers</th>
+                      <th>Source</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-if="!candidateUsers.length">
+                      <td colspan="4">No candidates loaded.</td>
+                    </tr>
+                    <tr v-for="candidate in candidateUsers" :key="candidate.profile.id">
+                      <td>{{ candidate.profile.display_name }}</td>
+                      <td>{{ candidate.profile.id }}</td>
+                      <td>{{ formatNumber(candidate.profile.followers_total) }}</td>
+                      <td>{{ candidate.source }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </article>
+          </div>
+        </section>
 
-              <div class="stats-grid">
+        <section class="view" :class="{ hidden: activeView !== 'playlists' }">
+          <div class="content-grid">
+            <article class="panel-frame">
+              <h2>Playlist Inventory</h2>
+
+              <div class="stats-grid playlist-stats">
                 <div class="stat panel-inset">
-                  <p class="stat-label">Tracks counted (24h)</p>
-                  <p class="stat-value" id="tracks-counted">{{ dashboard.tracksCounted }}</p>
+                  <p class="stat-label">Total playlists</p>
+                  <p class="stat-value">{{ stats.playlists_total }}</p>
                 </div>
                 <div class="stat panel-inset">
-                  <p class="stat-label">Completion threshold</p>
-                  <p class="stat-value" id="completion-threshold">{{ completionThresholdText }}</p>
+                  <p class="stat-label">Owned</p>
+                  <p class="stat-value">{{ stats.owned_playlists_total }}</p>
                 </div>
                 <div class="stat panel-inset">
-                  <p class="stat-label">Next favorite in</p>
-                  <p class="stat-value" id="next-favorite">{{ nextFavoriteText }}</p>
+                  <p class="stat-label">Followed public</p>
+                  <p class="stat-value">{{ stats.followed_public_playlists_total }}</p>
                 </div>
               </div>
 
-              <div class="queue-list">
-                <p class="section-label soft">Recent plays</p>
-                <ul id="recent-plays">
-                  <li v-if="!dashboard.recentPlays.length">
-                    <span>{{ recentPlaysEmptyText }}</span>
+              <div class="table-wrap panel-inset">
+                <table class="table" aria-label="Public playlists">
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>Owner</th>
+                      <th>Tracks</th>
+                      <th>Type</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-if="!playlistsAll.length">
+                      <td colspan="5">No public playlists loaded.</td>
+                    </tr>
+                    <tr v-for="playlist in playlistsAll" :key="playlist.id">
+                      <td>
+                        <a
+                          v-if="playlist.external_url"
+                          :href="playlist.external_url"
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          {{ playlist.name }}
+                        </a>
+                        <span v-else>{{ playlist.name }}</span>
+                      </td>
+                      <td>{{ playlist.owner.display_name }}</td>
+                      <td>{{ formatNumber(playlist.tracks_total) }}</td>
+                      <td>{{ playlist.relationship }}</td>
+                      <td>
+                        <button
+                          class="btn ghost"
+                          type="button"
+                          :disabled="loadingTracks"
+                          @click="loadPlaylistTracks(playlist)"
+                        >
+                          {{ loadingTracks && selectedPlaylist?.id === playlist.id ? "Loading..." : "Load Tracks" }}
+                        </button>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </article>
+
+            <article class="panel-frame">
+              <div class="panel-head">
+                <h2>Playlist Track Listing</h2>
+                <span class="status-pill" v-if="selectedPlaylistTracks.length">{{ selectedPlaylistTracks.length }} loaded</span>
+              </div>
+
+              <div v-if="selectedPlaylist" class="queue-list panel-inset">
+                <p class="section-label soft">
+                  {{ selectedPlaylist.name }}
+                  ({{ selectedPlaylistTracks.length }} of {{ selectedPlaylistTrackTotal }})
+                </p>
+                <ul>
+                  <li v-if="!selectedPlaylistTracks.length">
+                    <span>No tracks returned from Spotify for this playlist.</span>
                     <span>-</span>
                   </li>
-                  <li v-for="play in dashboard.recentPlays" :key="play.track_id + '-' + play.played_at">
-                    <span>{{ play.artist }} - {{ play.name }}</span>
-                    <span>{{ formatRelativeTime(play.played_at) }}</span>
+                  <li v-for="track in selectedPlaylistTracks" :key="track.id">
+                    <span>{{ artistsLabel(track) }} - {{ track.name }}</span>
+                    <span>{{ formatDuration(track.duration_ms) }}</span>
+                  </li>
+                </ul>
+              </div>
+
+              <div v-else class="panel-inset empty-panel">
+                Click <code>Load Tracks</code> on a playlist to list songs.
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section class="view" :class="{ hidden: activeView !== 'liked' }">
+          <div class="content-grid two-up">
+            <article class="panel-frame">
+              <h2>Liked Songs Availability</h2>
+              <div class="panel-inset empty-panel">
+                <p>{{ likedSongs.reason || unavailableLikedReason }}</p>
+                <p class="section-label soft">
+                  Derived tracks are from public playlists that look like "liked/favorites" collections.
+                </p>
+              </div>
+
+              <h2>Detected Public Liked Playlists</h2>
+              <div class="table-wrap panel-inset">
+                <table class="table" aria-label="Inferred liked playlists">
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>Matches</th>
+                      <th>Tracks</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-if="!derivedLikedPlaylists.length">
+                      <td colspan="3">No public liked/favorite-style playlists detected.</td>
+                    </tr>
+                    <tr v-for="playlist in derivedLikedPlaylists" :key="playlist.id">
+                      <td>{{ playlist.name }}</td>
+                      <td>{{ playlist.matched_keywords.join(', ') }}</td>
+                      <td>{{ formatNumber(playlist.tracks_total) }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </article>
+
+            <article class="panel-frame">
+              <h2>Derived Liked Tracks</h2>
+              <div class="queue-list panel-inset">
+                <ul>
+                  <li v-if="!derivedLikedTracks.length">
+                    <span>No derived tracks available.</span>
+                    <span>-</span>
+                  </li>
+                  <li v-for="track in derivedLikedTracks" :key="track.id + '-' + track.source_playlist.id">
+                    <span>
+                      {{ artistsLabel(track) }} - {{ track.name }}
+                      <small class="section-label soft">({{ track.source_playlist.name }})</small>
+                    </span>
+                    <span>{{ formatDuration(track.duration_ms) }}</span>
                   </li>
                 </ul>
               </div>
@@ -167,176 +346,51 @@
           </div>
         </section>
 
-        <section class="view" :class="{ hidden: activeView !== 'favorites' }" data-view="favorites">
-          <article class="panel-frame">
-            <div class="panel-head">
-              <h2>Favorites Ledger</h2>
-            </div>
-            <div class="table-wrap panel-inset">
-              <table class="table" aria-label="Favorites">
-                <thead>
-                  <tr>
-                    <th>Track</th>
-                    <th>Artist</th>
-                    <th>Plays</th>
-                    <th>Last played</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody id="favorites-table">
-                  <tr v-if="!favorites.length">
-                    <td colspan="5">{{ favoritesEmptyText }}</td>
-                  </tr>
-                  <tr v-for="favorite in favorites" :key="favorite.track_id">
-                    <td>{{ favorite.name }}</td>
-                    <td>{{ favorite.artist }}</td>
-                    <td>{{ favorite.occurrences }}</td>
-                    <td>{{ formatRelativeTime(favorite.last_played) }}</td>
-                    <td>
-                      <button
-                        class="btn ghost force-add-btn"
-                        type="button"
-                        :disabled="!controlsEnabled"
-                        @click="forceAdd(favorite.track_id)"
-                      >
-                        Force add
-                      </button>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </article>
-        </section>
-
-        <section class="view" :class="{ hidden: activeView !== 'settings' }" data-view="settings">
+        <section class="view" :class="{ hidden: activeView !== 'following' }">
           <div class="content-grid two-up">
             <article class="panel-frame">
-              <h2>Tracking Controls</h2>
-              <form class="form" id="tracking-form" @submit.prevent="saveTrackingSettings">
-                <label class="slider-field">
-                  Favorite threshold
-                  <div class="slider-row">
-                    <div class="slider-track-wrap ref-21">
-                      <input
-                        type="range"
-                        id="favorite-threshold"
-                        min="1"
-                        max="20"
-                        step="1"
-                        v-model.number="settings.favorite_threshold"
-                        :disabled="!controlsEnabled"
-                      />
-                    </div>
-                    <output class="slider-value" id="favorite-threshold-value" for="favorite-threshold">
-                      {{ favoriteThresholdValue }}
-                    </output>
-                  </div>
-                  <p class="slider-reference">Default - 5</p>
-                </label>
+              <h2>Following Availability</h2>
+              <div class="panel-inset empty-panel">
+                <p>{{ following.reason || unavailableFollowingReason }}</p>
+                <p class="section-label soft">
+                  Spotify does not expose other users' follow graph in public Web API responses.
+                </p>
+              </div>
 
-                <label class="slider-field">
-                  Completion ratio
-                  <div class="slider-row">
-                    <div class="slider-track-wrap ref-60">
-                      <input
-                        type="range"
-                        id="completion-ratio"
-                        min="0.5"
-                        max="1"
-                        step="0.05"
-                        v-model.number="settings.min_completion_ratio"
-                        :disabled="!controlsEnabled"
-                      />
-                    </div>
-                    <output class="slider-value" id="completion-ratio-value" for="completion-ratio">
-                      {{ completionRatioValue }}
-                    </output>
-                  </div>
-                  <p class="slider-reference">Default - 80%</p>
-                </label>
-
-                <label class="slider-field">
-                  Check interval (seconds)
-                  <div class="slider-row">
-                    <div class="slider-track-wrap ref-2">
-                      <input
-                        type="range"
-                        id="check-interval"
-                        min="3"
-                        max="300"
-                        step="1"
-                        v-model.number="settings.check_interval"
-                        :disabled="!controlsEnabled"
-                      />
-                    </div>
-                    <output class="slider-value" id="check-interval-value" for="check-interval">
-                      {{ checkIntervalValue }}
-                    </output>
-                  </div>
-                  <p class="slider-reference">Default - 10s</p>
-                </label>
-
-                <label class="slider-field">
-                  Min play gap
-                  <div class="slider-row">
-                    <div class="slider-track-wrap ref-17">
-                      <input
-                        type="range"
-                        id="play-gap"
-                        min="0"
-                        max="1800000"
-                        step="30000"
-                        v-model.number="settings.min_play_gap_ms"
-                        :disabled="!controlsEnabled"
-                      />
-                    </div>
-                    <output class="slider-value" id="play-gap-value" for="play-gap">
-                      {{ playGapValue }}
-                    </output>
-                  </div>
-                  <p class="slider-reference">Default - 5m 0s</p>
-                </label>
-
-                <button class="btn" type="submit" :disabled="!controlsEnabled">Save settings</button>
-              </form>
+              <h2>Public API Limitations</h2>
+              <div class="queue-list panel-inset">
+                <ul>
+                  <li v-for="item in limitations" :key="item">
+                    <span>{{ item }}</span>
+                    <span></span>
+                  </li>
+                </ul>
+              </div>
             </article>
 
             <article class="panel-frame">
-              <h2>Playlist Targets</h2>
-              <form class="form" id="playlist-form" @submit.prevent="savePlaylistSettings">
-                <label>
-                  Playlist name
-                  <input
-                    type="text"
-                    id="playlist-name"
-                    v-model="settings.playlist_name"
-                    required
-                    :disabled="!controlsEnabled"
-                  />
-                </label>
-                <label>
-                  Playlist privacy
-                  <select
-                    id="playlist-public"
-                    v-model="settings.playlist_public"
-                    :disabled="!controlsEnabled"
-                  >
-                    <option :value="true">Public</option>
-                    <option :value="false">Private</option>
-                  </select>
-                </label>
-                <label class="inline-check">
-                  <input
-                    type="checkbox"
-                    id="auto-add"
-                    v-model="settings.auto_add_enabled"
-                    :disabled="!controlsEnabled"
-                  />
-                  Auto add when threshold reached
-                </label>
-                <button class="btn" type="submit" :disabled="!controlsEnabled">Save playlist settings</button>
-              </form>
+              <h2>Public Followed Playlists</h2>
+              <div class="table-wrap panel-inset">
+                <table class="table" aria-label="Followed public playlists">
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>Owner</th>
+                      <th>Tracks</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-if="!followedPlaylists.length">
+                      <td colspan="3">No followed public playlists in current result.</td>
+                    </tr>
+                    <tr v-for="playlist in followedPlaylists" :key="playlist.id">
+                      <td>{{ playlist.name }}</td>
+                      <td>{{ playlist.owner.display_name }}</td>
+                      <td>{{ formatNumber(playlist.tracks_total) }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
             </article>
           </div>
         </section>
@@ -348,113 +402,109 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from "vue";
 
-const account = ref(null);
-const trackerRunning = ref(false);
-const activeView = ref("dashboard");
+const DEFAULT_LIMITATIONS = [
+  "Spotify public API does not provide another user's private Liked Songs collection.",
+  "Spotify public API does not provide another user's following graph (artists/users).",
+  "Any 'liked songs' shown here are inferred from public playlists with liked/favorite-style naming.",
+];
+
+const unavailableLikedReason =
+  "Spotify does not expose another user's Liked Songs via the public Web API.";
+const unavailableFollowingReason =
+  "Spotify does not expose another user's followed artists/users via the public Web API.";
+
+const searchQuery = ref("");
+const activeView = ref("profile");
+const loadingLookup = ref(false);
+const loadingTracks = ref(false);
 
 const globalMessage = ref("");
 const globalMessageKind = ref("info");
-const serviceStatus = ref("Connected");
-const healthSubtext = ref("Ready");
+const serviceStatus = ref("Ready");
+const healthSubtext = ref("Enter a username/tag");
 
-const dashboard = reactive({
-  trackTitle: "No active track",
-  trackArtist: "Connect a Spotify account to begin",
-  progressRatio: 0,
-  progressMs: 0,
-  durationMs: 0,
-  tracksCounted: 0,
-  completionThreshold: 0.8,
-  nextFavorite: 0,
-  recentPlays: [],
+const result = reactive({
+  selectedUser: null,
+  candidateUsers: [],
+  playlistsAll: [],
+  playlistsOwned: [],
+  playlistsFollowed: [],
+  likedSongs: {
+    available: false,
+    reason: unavailableLikedReason,
+    derived_from_public_playlists: [],
+    derived_tracks: [],
+  },
+  following: {
+    available: false,
+    reason: unavailableFollowingReason,
+    public_followed_playlists: [],
+  },
+  stats: {
+    playlists_total: 0,
+    owned_playlists_total: 0,
+    followed_public_playlists_total: 0,
+    inferred_liked_playlists_total: 0,
+    derived_liked_tracks_total: 0,
+  },
+  limitations: [...DEFAULT_LIMITATIONS],
+  selectedPlaylist: null,
+  selectedPlaylistTrackTotal: 0,
+  selectedPlaylistTracks: [],
 });
 
-const favorites = ref([]);
+const selectedUser = computed(() => result.selectedUser);
+const candidateUsers = computed(() => result.candidateUsers);
+const playlistsAll = computed(() => result.playlistsAll);
+const derivedLikedPlaylists = computed(() => result.likedSongs.derived_from_public_playlists || []);
+const derivedLikedTracks = computed(() => result.likedSongs.derived_tracks || []);
+const likedSongs = computed(() => result.likedSongs);
+const followedPlaylists = computed(() => result.following.public_followed_playlists || []);
+const following = computed(() => result.following);
+const stats = computed(() => result.stats);
+const limitations = computed(() => result.limitations || DEFAULT_LIMITATIONS);
+const hasResult = computed(() => Boolean(result.selectedUser));
+const selectedPlaylist = computed(() => result.selectedPlaylist);
+const selectedPlaylistTrackTotal = computed(() => result.selectedPlaylistTrackTotal || 0);
+const selectedPlaylistTracks = computed(() => result.selectedPlaylistTracks || []);
 
-const settings = reactive({
-  favorite_threshold: 5,
-  min_completion_ratio: 0.8,
-  check_interval: 10,
-  min_play_gap_ms: 300000,
-  playlist_name: "Favourite Songs - Whatsit",
-  playlist_public: true,
-  auto_add_enabled: true,
+const accountLabel = computed(() => {
+  if (!selectedUser.value) {
+    return "No account loaded";
+  }
+  return `${selectedUser.value.display_name} (@${selectedUser.value.id})`;
 });
 
-const controlsEnabled = computed(() => Boolean(account.value));
-const accountLabel = computed(() =>
-  account.value ? account.value.display_name : "No connected account"
-);
-
-const progressBarWidth = computed(() => {
-  const percent = Math.min(Math.max(dashboard.progressRatio * 100, 0), 100);
-  return `${percent}%`;
+const avatarInitials = computed(() => {
+  if (!selectedUser.value) {
+    return "?";
+  }
+  const value = String(selectedUser.value.display_name || selectedUser.value.id || "?").trim();
+  return value.slice(0, 2).toUpperCase();
 });
-const progressTime = computed(() => formatTime(dashboard.progressMs));
-const progressTotal = computed(() => formatTime(dashboard.durationMs));
-const completionThresholdText = computed(
-  () => `${Math.round(dashboard.completionThreshold * 100)}%`
-);
-const nextFavoriteText = computed(() => `${dashboard.nextFavorite} plays`);
-const favoriteThresholdValue = computed(() => String(settings.favorite_threshold));
-const completionRatioValue = computed(
-  () => `${Math.round(settings.min_completion_ratio * 100)}%`
-);
-const checkIntervalValue = computed(() => `${Math.round(settings.check_interval)}s`);
-const playGapValue = computed(() => formatDuration(settings.min_play_gap_ms));
-const recentPlaysEmptyText = computed(() =>
-  controlsEnabled.value ? "No recent plays" : "No plays logged yet"
-);
-const favoritesEmptyText = computed(() =>
-  controlsEnabled.value ? "No favorites yet." : "No favorites yet. Start a tracker and play music."
-);
 
 function showMessage(message, kind = "info") {
-  if (!message) {
-    globalMessage.value = "";
-    globalMessageKind.value = "info";
-    return;
-  }
-
-  globalMessage.value = message;
+  globalMessage.value = message || "";
   globalMessageKind.value = kind;
 }
 
-function formatTime(ms) {
-  const totalSeconds = Math.max(0, Math.floor((ms || 0) / 1000));
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
-}
-
-function formatRelativeTime(ms) {
-  if (!ms) {
-    return "-";
-  }
-
-  const diffSeconds = Math.floor((Date.now() - ms) / 1000);
-  if (diffSeconds < 60) {
-    return `${Math.max(diffSeconds, 0)}s ago`;
-  }
-  if (diffSeconds < 3600) {
-    return `${Math.floor(diffSeconds / 60)}m ago`;
-  }
-  if (diffSeconds < 86400) {
-    return `${Math.floor(diffSeconds / 3600)}h ago`;
-  }
-  return `${Math.floor(diffSeconds / 86400)}d ago`;
+function formatNumber(value) {
+  return new Intl.NumberFormat().format(Number(value) || 0);
 }
 
 function formatDuration(ms) {
   const totalSeconds = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
-  return `${minutes}m ${seconds}s`;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
-function clamp(value, min, max) {
-  const num = Number(value);
-  return Math.min(Math.max(num, min), max);
+function artistsLabel(track) {
+  const artists = Array.isArray(track?.artists) ? track.artists : [];
+  if (!artists.length) {
+    return "Unknown Artist";
+  }
+  return artists.join(", ");
 }
 
 async function apiRequest(path, options = {}) {
@@ -484,247 +534,143 @@ async function apiRequest(path, options = {}) {
   return payload;
 }
 
-function resetDashboard() {
-  dashboard.trackTitle = "No active track";
-  dashboard.trackArtist = "Connect a Spotify account to begin";
-  dashboard.progressRatio = 0;
-  dashboard.progressMs = 0;
-  dashboard.durationMs = 0;
-  dashboard.tracksCounted = 0;
-  dashboard.completionThreshold = 0.8;
-  dashboard.nextFavorite = 0;
-  dashboard.recentPlays = [];
-  trackerRunning.value = false;
-}
-
-function renderDashboard(data) {
-  const nowPlaying = data.now_playing;
-  const accountData = data.account;
-
-  account.value = accountData;
-  trackerRunning.value = Boolean(accountData.tracker_running);
-
-  if (nowPlaying && !nowPlaying.error && nowPlaying.name) {
-    dashboard.trackTitle = nowPlaying.name;
-    dashboard.trackArtist = nowPlaying.artist;
-    dashboard.progressRatio = nowPlaying.completion_ratio;
-    dashboard.progressMs = nowPlaying.progress_ms;
-    dashboard.durationMs = nowPlaying.duration_ms;
-  } else {
-    dashboard.trackTitle = "No active track";
-    dashboard.trackArtist = nowPlaying && nowPlaying.error ? nowPlaying.error : "Spotify playback is idle";
-    dashboard.progressRatio = 0;
-    dashboard.progressMs = 0;
-    dashboard.durationMs = 0;
-  }
-
-  dashboard.tracksCounted = data.stats.tracks_counted_24h;
-  dashboard.completionThreshold = data.stats.completion_threshold;
-  dashboard.nextFavorite = data.stats.next_favorite;
-  dashboard.recentPlays = data.recent_plays || [];
-
-  serviceStatus.value = "Connected";
-  healthSubtext.value = `${accountData.display_name} connected`;
-}
-
-function renderFavorites(list) {
-  favorites.value = list || [];
-}
-
-function renderSettings(data) {
-  const payload = data.settings || data;
-
-  if (!payload) {
-    return;
-  }
-
-  settings.favorite_threshold = clamp(
-    payload.favorite_threshold ?? settings.favorite_threshold,
-    1,
-    20
-  );
-  settings.min_completion_ratio = clamp(
-    payload.min_completion_ratio ?? settings.min_completion_ratio,
-    0.5,
-    1
-  );
-  settings.check_interval = clamp(payload.check_interval ?? settings.check_interval, 3, 300);
-  settings.min_play_gap_ms = clamp(
-    payload.min_play_gap_ms ?? settings.min_play_gap_ms,
-    0,
-    1_800_000
-  );
-  settings.playlist_name = payload.playlist_name ?? settings.playlist_name;
-  if (payload.playlist_public !== undefined) {
-    settings.playlist_public = Boolean(payload.playlist_public);
-  }
-  if (payload.auto_add_enabled !== undefined) {
-    settings.auto_add_enabled = Boolean(payload.auto_add_enabled);
-  }
-}
-
-async function loadSessionData() {
-  const [dashboardPayload, favoritesPayload, settingsPayload] = await Promise.all([
-    apiRequest("/api/me/dashboard"),
-    apiRequest("/api/me/favorites"),
-    apiRequest("/api/me/settings"),
-  ]);
-
-  renderDashboard(dashboardPayload);
-  renderFavorites(favoritesPayload.favorites || []);
-  renderSettings(settingsPayload);
-}
-
-async function connectSpotify() {
-  showMessage("");
-  try {
-    const payload = await apiRequest("/api/auth/spotify/start", { method: "POST" });
-    window.location.href = payload.auth_url;
-  } catch (error) {
-    showMessage(error.message, "error");
-  }
-}
-
-async function refreshDashboard() {
-  if (!controlsEnabled.value) {
-    return;
-  }
-
-  showMessage("");
-  try {
-    await loadSessionData();
-  } catch (error) {
-    showMessage(error.message, "error");
-  }
-}
-
-async function toggleTracker() {
-  if (!controlsEnabled.value) {
-    return;
-  }
-
-  showMessage("");
-  const action = trackerRunning.value ? "stop" : "start";
-
-  try {
-    await apiRequest(`/api/me/tracker/${action}`, { method: "POST" });
-    await loadSessionData();
-  } catch (error) {
-    showMessage(error.message, "error");
-  }
-}
-
-async function saveTrackingSettings() {
-  if (!controlsEnabled.value) {
-    return;
-  }
-
-  showMessage("");
-
-  const payload = {
-    favorite_threshold: Number(settings.favorite_threshold),
-    min_completion_ratio: Number(settings.min_completion_ratio),
-    check_interval: Number(settings.check_interval),
-    min_play_gap_ms: Number(settings.min_play_gap_ms),
+function resetResultState() {
+  result.selectedUser = null;
+  result.candidateUsers = [];
+  result.playlistsAll = [];
+  result.playlistsOwned = [];
+  result.playlistsFollowed = [];
+  result.likedSongs = {
+    available: false,
+    reason: unavailableLikedReason,
+    derived_from_public_playlists: [],
+    derived_tracks: [],
   };
-
-  try {
-    await apiRequest("/api/me/settings", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-    showMessage("Tracking settings saved.");
-    await loadSessionData();
-  } catch (error) {
-    showMessage(error.message, "error");
-  }
-}
-
-async function savePlaylistSettings() {
-  if (!controlsEnabled.value) {
-    return;
-  }
-
-  showMessage("");
-
-  const payload = {
-    playlist_name: settings.playlist_name,
-    playlist_public: Boolean(settings.playlist_public),
-    auto_add_enabled: Boolean(settings.auto_add_enabled),
+  result.following = {
+    available: false,
+    reason: unavailableFollowingReason,
+    public_followed_playlists: [],
   };
-
-  try {
-    await apiRequest("/api/me/settings", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-    showMessage("Playlist settings saved.");
-    await loadSessionData();
-  } catch (error) {
-    showMessage(error.message, "error");
-  }
+  result.stats = {
+    playlists_total: 0,
+    owned_playlists_total: 0,
+    followed_public_playlists_total: 0,
+    inferred_liked_playlists_total: 0,
+    derived_liked_tracks_total: 0,
+  };
+  result.limitations = [...DEFAULT_LIMITATIONS];
+  result.selectedPlaylist = null;
+  result.selectedPlaylistTrackTotal = 0;
+  result.selectedPlaylistTracks = [];
 }
 
-async function forceAdd(trackId) {
-  if (!trackId || !controlsEnabled.value) {
+function applyLookupPayload(payload) {
+  result.selectedUser = payload.selected_user || null;
+  result.candidateUsers = payload.candidate_users || [];
+  result.playlistsAll = payload.playlists?.all || [];
+  result.playlistsOwned = payload.playlists?.owned || [];
+  result.playlistsFollowed = payload.playlists?.followed_public || [];
+  result.likedSongs = payload.liked_songs || {
+    available: false,
+    reason: unavailableLikedReason,
+    derived_from_public_playlists: [],
+    derived_tracks: [],
+  };
+  result.following = payload.following || {
+    available: false,
+    reason: unavailableFollowingReason,
+    public_followed_playlists: [],
+  };
+  result.stats = payload.stats || result.stats;
+  result.limitations = payload.limitations || [...DEFAULT_LIMITATIONS];
+  result.selectedPlaylist = null;
+  result.selectedPlaylistTrackTotal = 0;
+  result.selectedPlaylistTracks = [];
+}
+
+async function lookupProfile() {
+  const query = searchQuery.value.trim();
+  if (!query) {
+    showMessage("Enter a Spotify username, @tag, or profile URL.", "error");
     return;
   }
 
+  loadingLookup.value = true;
   showMessage("");
 
   try {
-    await apiRequest(`/api/me/favorites/${trackId}/force-add`, {
-      method: "POST",
-    });
-    showMessage("Track queued for playlist add.");
+    const payload = await apiRequest(`/api/public/lookup?query=${encodeURIComponent(query)}`);
+    applyLookupPayload(payload);
+
+    serviceStatus.value = "Online";
+    if (result.selectedUser) {
+      healthSubtext.value = `${result.selectedUser.display_name} loaded`;
+      showMessage(
+        `Loaded ${result.selectedUser.display_name} with ${formatNumber(result.stats.playlists_total)} public playlists.`,
+        "info"
+      );
+    }
   } catch (error) {
     showMessage(error.message, "error");
+    serviceStatus.value = "Error";
+    healthSubtext.value = "Lookup failed";
+  } finally {
+    loadingLookup.value = false;
   }
+}
+
+async function loadPlaylistTracks(playlist) {
+  if (!playlist?.id) {
+    return;
+  }
+
+  loadingTracks.value = true;
+  showMessage("");
+
+  try {
+    const payload = await apiRequest(
+      `/api/public/playlists/${encodeURIComponent(playlist.id)}/tracks?limit=100`
+    );
+    result.selectedPlaylist = playlist;
+    result.selectedPlaylistTrackTotal = payload.total || 0;
+    result.selectedPlaylistTracks = payload.tracks || [];
+    showMessage(`Loaded ${result.selectedPlaylistTracks.length} tracks from ${playlist.name}.`, "info");
+  } catch (error) {
+    showMessage(error.message, "error");
+  } finally {
+    loadingTracks.value = false;
+  }
+}
+
+function clearResults() {
+  searchQuery.value = "";
+  showMessage("");
+  resetResultState();
+  serviceStatus.value = "Ready";
+  healthSubtext.value = "Enter a username/tag";
+  activeView.value = "profile";
 }
 
 function setActiveView(view) {
   activeView.value = view;
 }
 
-async function initialize() {
-  if (window.location.protocol === "file:") {
+onMounted(async () => {
+  try {
+    await apiRequest("/api/health");
+    serviceStatus.value = "Online";
+    healthSubtext.value = "Ready for public lookups";
+  } catch (error) {
     serviceStatus.value = "Offline";
-    healthSubtext.value = "Use HTTP server";
-    showMessage(
-      "Open this app via http://<host>:<port>, not file://. API calls are blocked from local files.",
-      "error"
-    );
+    healthSubtext.value = "API unavailable";
+    showMessage(error.message, "error");
     return;
   }
 
-  const query = new URLSearchParams(window.location.search);
-  if (query.get("oauth") === "connected") {
-    showMessage("Spotify account connected.");
-    window.history.replaceState({}, document.title, "/");
-  } else if (query.get("oauth") === "error") {
-    showMessage("Spotify connection was cancelled or failed.", "error");
-    window.history.replaceState({}, document.title, "/");
+  const initialQuery = new URLSearchParams(window.location.search).get("q");
+  if (initialQuery) {
+    searchQuery.value = initialQuery;
+    await lookupProfile();
   }
-
-  try {
-    await loadSessionData();
-  } catch (error) {
-    if (error.status === 401) {
-      serviceStatus.value = "Not connected";
-      healthSubtext.value = "Connect Spotify to begin";
-      resetDashboard();
-      favorites.value = [];
-      account.value = null;
-      showMessage("Connect a Spotify account to begin.", "info");
-    } else {
-      serviceStatus.value = "Error";
-      healthSubtext.value = "API unavailable";
-      showMessage(error.message, "error");
-    }
-  }
-}
-
-onMounted(() => {
-  initialize();
 });
 </script>

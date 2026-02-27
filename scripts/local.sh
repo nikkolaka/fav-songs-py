@@ -21,7 +21,8 @@ Usage:
   ./scripts/local.sh up       Build and start local stack
   ./scripts/local.sh down     Stop local stack
   ./scripts/local.sh logs     Follow local stack logs
-  ./scripts/local.sh rebuild  Rebuild from scratch (down -v + up --build)
+  ./scripts/local.sh rebuild  Rebuild app container
+  ./scripts/local.sh reset    Destroy stack resources (destructive)
   ./scripts/local.sh status   Show local stack status
 EOF
 }
@@ -77,10 +78,13 @@ main() {
       ;;
     rebuild)
       ensure_env_file
-      compose down -v
-      compose up -d --build
+      compose up -d --build --force-recreate
       check_health
       compose ps
+      ;;
+    reset)
+      ensure_env_file
+      compose down -v
       ;;
     status)
       ensure_env_file
