@@ -1,365 +1,300 @@
 <template>
-  <div>
-    <div class="scanlines" aria-hidden="true"></div>
+  <div class="crt-overlay" aria-hidden="true"></div>
 
-    <div class="app-shell">
-      <aside class="side-column panel-frame">
-        <div class="brand-block panel-inset">
-          <p class="brand-label">FavSongs</p>
-          <p class="brand-name">Super Secret Dashboard</p>
+  <div class="app-shell">
+    <header class="masthead panel">
+      <div class="title-stack">
+        <p class="eyebrow">FavSongs Node</p>
+        <h1>Local Music Ops Board</h1>
+      </div>
+      <div class="badges">
+        <span class="badge" :class="service.local_only_mode ? 'badge-ok' : 'badge-warn'">
+          {{ service.local_only_mode ? "LAN ONLY" : "OPEN MODE" }}
+        </span>
+        <span class="badge" :class="service.accepting_new_users ? 'badge-ok' : 'badge-warn'">
+          SEATS {{ service.connected_users }}/{{ service.max_connected_users }}
+        </span>
+      </div>
+    </header>
+
+    <section class="status-strip panel">
+      <article class="status-item">
+        <p class="status-label">Service</p>
+        <p class="status-value">{{ serviceStatusText }}</p>
+        <p class="status-sub">{{ serviceSubtext }}</p>
+      </article>
+      <article class="status-item">
+        <p class="status-label">Account</p>
+        <p class="status-value">{{ accountLabel }}</p>
+        <p class="status-sub">{{ trackerRunning ? "Tracking on" : "Tracking idle" }}</p>
+      </article>
+      <article class="status-item actions">
+        <button class="btn" type="button" @click="connectSpotify">Connect Spotify</button>
+        <button class="btn btn-ghost" type="button" :disabled="!controlsEnabled" @click="refreshDashboard">
+          Refresh
+        </button>
+      </article>
+    </section>
+
+    <p class="message" :class="{ hidden: !globalMessage, error: globalMessageKind === 'error' }">
+      {{ globalMessage || "-" }}
+    </p>
+
+    <nav class="tabbar panel" aria-label="View selector">
+      <button
+        class="tab"
+        :class="{ active: activeView === 'dashboard' }"
+        type="button"
+        @click="setActiveView('dashboard')"
+      >
+        Dashboard
+      </button>
+      <button
+        class="tab"
+        :class="{ active: activeView === 'favorites' }"
+        type="button"
+        @click="setActiveView('favorites')"
+      >
+        Favorites
+      </button>
+      <button
+        class="tab"
+        :class="{ active: activeView === 'settings' }"
+        type="button"
+        @click="setActiveView('settings')"
+      >
+        Settings
+      </button>
+    </nav>
+
+    <section v-if="activeView === 'dashboard'" class="view-grid">
+      <article class="panel card">
+        <div class="card-head">
+          <h2>Now Playing</h2>
+          <span class="chip">{{ trackerRunning ? "RUNNING" : "STOPPED" }}</span>
         </div>
 
-        <div class="status-block panel-inset">
-          <p class="section-label">Service Health</p>
-          <div class="status-row">
-            <span class="status-led" aria-hidden="true"></span>
-            <div>
-              <p class="status-main" id="service-status">{{ serviceStatus }}</p>
-              <p class="status-sub" id="health-subtext">{{ healthSubtext }}</p>
-            </div>
+        <div class="track-block">
+          <p class="track-title">{{ dashboard.trackTitle }}</p>
+          <p class="track-artist">{{ dashboard.trackArtist }}</p>
+          <div class="progress-track">
+            <div class="progress-bar" :style="{ width: progressBarWidth }"></div>
+          </div>
+          <div class="progress-meta">
+            <span>{{ progressTime }}</span>
+            <span>{{ progressTotal }}</span>
           </div>
         </div>
-      </aside>
 
-      <main class="main-column">
-        <header class="console-rack panel-frame">
-          <div class="rack-line rack-title panel-inset">
-            <div class="window-title">
-              <span class="title-dot"></span>
-              <span>FavSongs v1.0</span>
-            </div>
-            <div class="window-controls" aria-hidden="true">
-              <span class="control-btn">_</span>
-              <span class="control-btn">[]</span>
-              <span class="control-btn">X</span>
-            </div>
-          </div>
+        <div class="row-actions">
+          <button
+            class="btn"
+            type="button"
+            :disabled="!controlsEnabled"
+            @click="toggleTracker"
+          >
+            {{ trackerRunning ? "Stop Tracker" : "Start Tracker" }}
+          </button>
+        </div>
+      </article>
 
-          <div class="rack-line rack-nav panel-inset">
-            <p class="section-label">Mode</p>
-            <nav class="nav nav-top" aria-label="Primary mirror">
-              <button
-                class="nav-link"
-                :class="{ 'is-active': activeView === 'dashboard' }"
-                type="button"
-                @click="setActiveView('dashboard')"
-              >
-                Dashboard
-              </button>
-              <button
-                class="nav-link"
-                :class="{ 'is-active': activeView === 'favorites' }"
-                type="button"
-                @click="setActiveView('favorites')"
-              >
-                Favorites
-              </button>
-              <button
-                class="nav-link"
-                :class="{ 'is-active': activeView === 'settings' }"
-                type="button"
-                @click="setActiveView('settings')"
-              >
-                Settings
-              </button>
-            </nav>
-            <div class="vu-meter" aria-hidden="true">
-              <span></span><span></span><span></span><span></span><span></span><span></span><span></span>
-            </div>
-          </div>
+      <article class="panel card">
+        <div class="card-head">
+          <h2>Session Stats</h2>
+        </div>
 
-          <div class="rack-line rack-control panel-inset">
-            <div class="select-wrap">
-              <label>Spotify Account</label>
-              <p class="account-value">{{ accountLabel }}</p>
-            </div>
-            <div class="rack-actions">
-              <button class="btn" id="connect-spotify" type="button" @click="connectSpotify">
-                Connect Spotify
-              </button>
-            </div>
-          </div>
-        </header>
+        <ul class="stat-list">
+          <li>
+            <span>Tracks counted (24h)</span>
+            <strong>{{ dashboard.tracksCounted }}</strong>
+          </li>
+          <li>
+            <span>Completion threshold</span>
+            <strong>{{ completionThresholdText }}</strong>
+          </li>
+          <li>
+            <span>Next favorite in</span>
+            <strong>{{ nextFavoriteText }}</strong>
+          </li>
+          <li>
+            <span>Open seats</span>
+            <strong>{{ service.remaining_slots }}</strong>
+          </li>
+        </ul>
+      </article>
 
-        <p class="message" :class="{ 'is-empty': !globalMessage, error: globalMessageKind === 'error' }">
-          {{ globalMessage }}
-        </p>
+      <article class="panel card full-width">
+        <div class="card-head">
+          <h2>Recent Plays</h2>
+        </div>
 
-        <section class="view" :class="{ hidden: activeView !== 'dashboard' }" data-view="dashboard">
-          <div class="content-grid two-up">
-            <article class="panel-frame feature-panel">
-              <div class="panel-head">
-                <h2>Now Playing</h2>
-                <span class="status-pill" id="tracker-status">{{ trackerRunning ? "Running" : "Stopped" }}</span>
-              </div>
+        <ul class="recent-list">
+          <li v-if="!dashboard.recentPlays.length">
+            <span>{{ recentPlaysEmptyText }}</span>
+            <span>-</span>
+          </li>
+          <li v-for="play in dashboard.recentPlays" :key="play.track_id + '-' + play.played_at">
+            <span>{{ play.artist }} - {{ play.name }}</span>
+            <span>{{ formatRelativeTime(play.played_at) }}</span>
+          </li>
+        </ul>
+      </article>
+    </section>
 
-              <div class="now-playing panel-inset">
-                <div class="album-art" aria-hidden="true"></div>
-                <div>
-                  <p class="track-title" id="track-title">{{ dashboard.trackTitle }}</p>
-                  <p class="track-artist" id="track-artist">{{ dashboard.trackArtist }}</p>
+    <section v-if="activeView === 'favorites'" class="view-single">
+      <article class="panel card">
+        <div class="card-head">
+          <h2>Favorites Ledger</h2>
+        </div>
 
-                  <div class="progress-slot">
-                    <div class="progress-bar" id="progress-bar" :style="{ width: progressBarWidth }"></div>
-                  </div>
-
-                  <div class="progress-meta">
-                    <span id="progress-time">{{ progressTime }}</span>
-                    <span id="progress-total">{{ progressTotal }}</span>
-                  </div>
-                </div>
-              </div>
-
-              <div class="panel-actions">
-                <button
-                  class="btn ghost"
-                  id="toggle-tracker"
-                  type="button"
-                  :disabled="!controlsEnabled"
-                  @click="toggleTracker"
-                >
-                  {{ trackerRunning ? "Stop Tracking" : "Start Tracking" }}
-                </button>
-                <button
-                  class="btn ghost"
-                  id="refresh-dashboard"
-                  type="button"
-                  :disabled="!controlsEnabled"
-                  @click="refreshDashboard"
-                >
-                  Refresh
-                </button>
-              </div>
-            </article>
-
-            <article class="panel-frame">
-              <h2>Session Summary</h2>
-
-              <div class="stats-grid">
-                <div class="stat panel-inset">
-                  <p class="stat-label">Tracks counted (24h)</p>
-                  <p class="stat-value" id="tracks-counted">{{ dashboard.tracksCounted }}</p>
-                </div>
-                <div class="stat panel-inset">
-                  <p class="stat-label">Completion threshold</p>
-                  <p class="stat-value" id="completion-threshold">{{ completionThresholdText }}</p>
-                </div>
-                <div class="stat panel-inset">
-                  <p class="stat-label">Next favorite in</p>
-                  <p class="stat-value" id="next-favorite">{{ nextFavoriteText }}</p>
-                </div>
-              </div>
-
-              <div class="queue-list">
-                <p class="section-label soft">Recent plays</p>
-                <ul id="recent-plays">
-                  <li v-if="!dashboard.recentPlays.length">
-                    <span>{{ recentPlaysEmptyText }}</span>
-                    <span>-</span>
-                  </li>
-                  <li v-for="play in dashboard.recentPlays" :key="play.track_id + '-' + play.played_at">
-                    <span>{{ play.artist }} - {{ play.name }}</span>
-                    <span>{{ formatRelativeTime(play.played_at) }}</span>
-                  </li>
-                </ul>
-              </div>
-            </article>
-          </div>
-        </section>
-
-        <section class="view" :class="{ hidden: activeView !== 'favorites' }" data-view="favorites">
-          <article class="panel-frame">
-            <div class="panel-head">
-              <h2>Favorites Ledger</h2>
-            </div>
-            <div class="table-wrap panel-inset">
-              <table class="table" aria-label="Favorites">
-                <thead>
-                  <tr>
-                    <th>Track</th>
-                    <th>Artist</th>
-                    <th>Plays</th>
-                    <th>Last played</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody id="favorites-table">
-                  <tr v-if="!favorites.length">
-                    <td colspan="5">{{ favoritesEmptyText }}</td>
-                  </tr>
-                  <tr v-for="favorite in favorites" :key="favorite.track_id">
-                    <td>{{ favorite.name }}</td>
-                    <td>{{ favorite.artist }}</td>
-                    <td>{{ favorite.occurrences }}</td>
-                    <td>{{ formatRelativeTime(favorite.last_played) }}</td>
-                    <td>
-                      <button
-                        class="btn ghost force-add-btn"
-                        type="button"
-                        :disabled="!controlsEnabled"
-                        @click="forceAdd(favorite.track_id)"
-                      >
-                        Force add
-                      </button>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </article>
-        </section>
-
-        <section class="view" :class="{ hidden: activeView !== 'settings' }" data-view="settings">
-          <div class="content-grid two-up">
-            <article class="panel-frame">
-              <h2>Tracking Controls</h2>
-              <form class="form" id="tracking-form" @submit.prevent="saveTrackingSettings">
-                <label class="slider-field">
-                  Favorite threshold
-                  <div class="slider-row">
-                    <div class="slider-track-wrap ref-21">
-                      <input
-                        type="range"
-                        id="favorite-threshold"
-                        min="1"
-                        max="20"
-                        step="1"
-                        v-model.number="settings.favorite_threshold"
-                        :disabled="!controlsEnabled"
-                      />
-                    </div>
-                    <output class="slider-value" id="favorite-threshold-value" for="favorite-threshold">
-                      {{ favoriteThresholdValue }}
-                    </output>
-                  </div>
-                  <p class="slider-reference">Default - 5</p>
-                </label>
-
-                <label class="slider-field">
-                  Completion ratio
-                  <div class="slider-row">
-                    <div class="slider-track-wrap ref-60">
-                      <input
-                        type="range"
-                        id="completion-ratio"
-                        min="0.5"
-                        max="1"
-                        step="0.05"
-                        v-model.number="settings.min_completion_ratio"
-                        :disabled="!controlsEnabled"
-                      />
-                    </div>
-                    <output class="slider-value" id="completion-ratio-value" for="completion-ratio">
-                      {{ completionRatioValue }}
-                    </output>
-                  </div>
-                  <p class="slider-reference">Default - 80%</p>
-                </label>
-
-                <label class="slider-field">
-                  Check interval (seconds)
-                  <div class="slider-row">
-                    <div class="slider-track-wrap ref-2">
-                      <input
-                        type="range"
-                        id="check-interval"
-                        min="3"
-                        max="300"
-                        step="1"
-                        v-model.number="settings.check_interval"
-                        :disabled="!controlsEnabled"
-                      />
-                    </div>
-                    <output class="slider-value" id="check-interval-value" for="check-interval">
-                      {{ checkIntervalValue }}
-                    </output>
-                  </div>
-                  <p class="slider-reference">Default - 10s</p>
-                </label>
-
-                <label class="slider-field">
-                  Min play gap
-                  <div class="slider-row">
-                    <div class="slider-track-wrap ref-17">
-                      <input
-                        type="range"
-                        id="play-gap"
-                        min="0"
-                        max="1800000"
-                        step="30000"
-                        v-model.number="settings.min_play_gap_ms"
-                        :disabled="!controlsEnabled"
-                      />
-                    </div>
-                    <output class="slider-value" id="play-gap-value" for="play-gap">
-                      {{ playGapValue }}
-                    </output>
-                  </div>
-                  <p class="slider-reference">Default - 5m 0s</p>
-                </label>
-
-                <button class="btn" type="submit" :disabled="!controlsEnabled">Save settings</button>
-              </form>
-            </article>
-
-            <article class="panel-frame">
-              <h2>Playlist Targets</h2>
-              <form class="form" id="playlist-form" @submit.prevent="savePlaylistSettings">
-                <label>
-                  Playlist name
-                  <input
-                    type="text"
-                    id="playlist-name"
-                    v-model="settings.playlist_name"
-                    required
+        <div class="table-wrap">
+          <table class="table" aria-label="Favorites">
+            <thead>
+              <tr>
+                <th>Track</th>
+                <th>Artist</th>
+                <th>Plays</th>
+                <th>Last played</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="!favorites.length">
+                <td colspan="5">{{ favoritesEmptyText }}</td>
+              </tr>
+              <tr v-for="favorite in favorites" :key="favorite.track_id">
+                <td>{{ favorite.name }}</td>
+                <td>{{ favorite.artist }}</td>
+                <td>{{ favorite.occurrences }}</td>
+                <td>{{ formatRelativeTime(favorite.last_played) }}</td>
+                <td>
+                  <button
+                    class="btn btn-ghost compact"
+                    type="button"
                     :disabled="!controlsEnabled"
-                  />
-                </label>
-                <label>
-                  Playlist privacy
-                  <select
-                    id="playlist-public"
-                    v-model="settings.playlist_public"
-                    :disabled="!controlsEnabled"
+                    @click="forceAdd(favorite.track_id)"
                   >
-                    <option :value="true">Public</option>
-                    <option :value="false">Private</option>
-                  </select>
-                </label>
-                <label class="inline-check">
-                  <input
-                    type="checkbox"
-                    id="auto-add"
-                    v-model="settings.auto_add_enabled"
-                    :disabled="!controlsEnabled"
-                  />
-                  Auto add when threshold reached
-                </label>
-                <button class="btn" type="submit" :disabled="!controlsEnabled">Save playlist settings</button>
-              </form>
-            </article>
-          </div>
-        </section>
-      </main>
-    </div>
+                    Force add
+                  </button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </article>
+    </section>
+
+    <section v-if="activeView === 'settings'" class="view-grid">
+      <article class="panel card">
+        <div class="card-head">
+          <h2>Tracking</h2>
+        </div>
+
+        <form class="form" @submit.prevent="saveTrackingSettings">
+          <label>
+            Favorite threshold
+            <input
+              v-model.number="settings.favorite_threshold"
+              type="number"
+              min="1"
+              max="20"
+              step="1"
+              :disabled="!controlsEnabled"
+            />
+          </label>
+
+          <label>
+            Completion ratio
+            <input
+              v-model.number="settings.min_completion_ratio"
+              type="number"
+              min="0.5"
+              max="1"
+              step="0.05"
+              :disabled="!controlsEnabled"
+            />
+          </label>
+
+          <label>
+            Check interval (seconds)
+            <input
+              v-model.number="settings.check_interval"
+              type="number"
+              min="3"
+              max="300"
+              step="1"
+              :disabled="!controlsEnabled"
+            />
+          </label>
+
+          <label>
+            Min play gap (ms)
+            <input
+              v-model.number="settings.min_play_gap_ms"
+              type="number"
+              min="0"
+              max="86400000"
+              step="30000"
+              :disabled="!controlsEnabled"
+            />
+          </label>
+
+          <button class="btn" type="submit" :disabled="!controlsEnabled">Save tracking settings</button>
+        </form>
+      </article>
+
+      <article class="panel card">
+        <div class="card-head">
+          <h2>Playlist</h2>
+        </div>
+
+        <form class="form" @submit.prevent="savePlaylistSettings">
+          <label>
+            Playlist name
+            <input v-model="settings.playlist_name" type="text" required :disabled="!controlsEnabled" />
+          </label>
+
+          <label>
+            Playlist privacy
+            <select v-model="settings.playlist_public" :disabled="!controlsEnabled">
+              <option :value="true">Public</option>
+              <option :value="false">Private</option>
+            </select>
+          </label>
+
+          <label class="check-line">
+            <input v-model="settings.auto_add_enabled" type="checkbox" :disabled="!controlsEnabled" />
+            Auto add when threshold reached
+          </label>
+
+          <button class="btn" type="submit" :disabled="!controlsEnabled">Save playlist settings</button>
+        </form>
+      </article>
+    </section>
   </div>
 </template>
 
 <script setup>
 import { computed, onMounted, reactive, ref } from "vue";
 
+const activeView = ref("dashboard");
 const account = ref(null);
 const trackerRunning = ref(false);
-const activeView = ref("dashboard");
 
 const globalMessage = ref("");
 const globalMessageKind = ref("info");
-const serviceStatus = ref("Connected");
-const healthSubtext = ref("Ready");
+
+const service = reactive({
+  local_only_mode: true,
+  connected_users: 0,
+  max_connected_users: 6,
+  remaining_slots: 6,
+  accepting_new_users: true,
+});
 
 const dashboard = reactive({
   trackTitle: "No active track",
-  trackArtist: "Connect a Spotify account to begin",
+  trackArtist: "Connect Spotify to begin",
   progressRatio: 0,
   progressMs: 0,
   durationMs: 0,
@@ -383,8 +318,22 @@ const settings = reactive({
 
 const controlsEnabled = computed(() => Boolean(account.value));
 const accountLabel = computed(() =>
-  account.value ? account.value.display_name : "No connected account"
+  account.value ? account.value.display_name : "No authenticated session"
 );
+
+const serviceStatusText = computed(() => {
+  if (!service.local_only_mode) {
+    return "Running (open mode)";
+  }
+  return "Running (LAN-only)";
+});
+
+const serviceSubtext = computed(() => {
+  if (service.accepting_new_users) {
+    return `${service.remaining_slots} seats available`;
+  }
+  return "Account cap reached";
+});
 
 const progressBarWidth = computed(() => {
   const percent = Math.min(Math.max(dashboard.progressRatio * 100, 0), 100);
@@ -396,17 +345,12 @@ const completionThresholdText = computed(
   () => `${Math.round(dashboard.completionThreshold * 100)}%`
 );
 const nextFavoriteText = computed(() => `${dashboard.nextFavorite} plays`);
-const favoriteThresholdValue = computed(() => String(settings.favorite_threshold));
-const completionRatioValue = computed(
-  () => `${Math.round(settings.min_completion_ratio * 100)}%`
-);
-const checkIntervalValue = computed(() => `${Math.round(settings.check_interval)}s`);
-const playGapValue = computed(() => formatDuration(settings.min_play_gap_ms));
+
 const recentPlaysEmptyText = computed(() =>
-  controlsEnabled.value ? "No recent plays" : "No plays logged yet"
+  controlsEnabled.value ? "No recent plays" : "Login required for personal activity"
 );
 const favoritesEmptyText = computed(() =>
-  controlsEnabled.value ? "No favorites yet." : "No favorites yet. Start a tracker and play music."
+  controlsEnabled.value ? "No favorites yet" : "Login and start tracker to build favorites"
 );
 
 function showMessage(message, kind = "info") {
@@ -445,13 +389,6 @@ function formatRelativeTime(ms) {
   return `${Math.floor(diffSeconds / 86400)}d ago`;
 }
 
-function formatDuration(ms) {
-  const totalSeconds = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${minutes}m ${seconds}s`;
-}
-
 function clamp(value, min, max) {
   const num = Number(value);
   return Math.min(Math.max(num, min), max);
@@ -460,6 +397,7 @@ function clamp(value, min, max) {
 async function apiRequest(path, options = {}) {
   const fetchOptions = { ...options };
   fetchOptions.headers = { ...(options.headers || {}) };
+
   if (options.body && !fetchOptions.headers["Content-Type"]) {
     fetchOptions.headers["Content-Type"] = "application/json";
   }
@@ -484,9 +422,22 @@ async function apiRequest(path, options = {}) {
   return payload;
 }
 
+function applyServiceStatus(payload) {
+  const servicePayload = payload?.service || payload;
+  if (!servicePayload) {
+    return;
+  }
+
+  service.local_only_mode = Boolean(servicePayload.local_only_mode);
+  service.connected_users = Number(servicePayload.connected_users || 0);
+  service.max_connected_users = Number(servicePayload.max_connected_users || 6);
+  service.remaining_slots = Number(servicePayload.remaining_slots || 0);
+  service.accepting_new_users = Boolean(servicePayload.accepting_new_users);
+}
+
 function resetDashboard() {
   dashboard.trackTitle = "No active track";
-  dashboard.trackArtist = "Connect a Spotify account to begin";
+  dashboard.trackArtist = "Connect Spotify to begin";
   dashboard.progressRatio = 0;
   dashboard.progressMs = 0;
   dashboard.durationMs = 0;
@@ -502,29 +453,28 @@ function renderDashboard(data) {
   const accountData = data.account;
 
   account.value = accountData;
-  trackerRunning.value = Boolean(accountData.tracker_running);
+  trackerRunning.value = Boolean(accountData?.tracker_running);
 
   if (nowPlaying && !nowPlaying.error && nowPlaying.name) {
     dashboard.trackTitle = nowPlaying.name;
     dashboard.trackArtist = nowPlaying.artist;
-    dashboard.progressRatio = nowPlaying.completion_ratio;
-    dashboard.progressMs = nowPlaying.progress_ms;
-    dashboard.durationMs = nowPlaying.duration_ms;
+    dashboard.progressRatio = Number(nowPlaying.completion_ratio || 0);
+    dashboard.progressMs = Number(nowPlaying.progress_ms || 0);
+    dashboard.durationMs = Number(nowPlaying.duration_ms || 0);
   } else {
     dashboard.trackTitle = "No active track";
-    dashboard.trackArtist = nowPlaying && nowPlaying.error ? nowPlaying.error : "Spotify playback is idle";
+    dashboard.trackArtist = nowPlaying?.error || "Spotify playback is idle";
     dashboard.progressRatio = 0;
     dashboard.progressMs = 0;
     dashboard.durationMs = 0;
   }
 
-  dashboard.tracksCounted = data.stats.tracks_counted_24h;
-  dashboard.completionThreshold = data.stats.completion_threshold;
-  dashboard.nextFavorite = data.stats.next_favorite;
+  dashboard.tracksCounted = Number(data.stats?.tracks_counted_24h || 0);
+  dashboard.completionThreshold = Number(data.stats?.completion_threshold || 0.8);
+  dashboard.nextFavorite = Number(data.stats?.next_favorite || 0);
   dashboard.recentPlays = data.recent_plays || [];
 
-  serviceStatus.value = "Connected";
-  healthSubtext.value = `${accountData.display_name} connected`;
+  applyServiceStatus(data.service);
 }
 
 function renderFavorites(list) {
@@ -533,7 +483,6 @@ function renderFavorites(list) {
 
 function renderSettings(data) {
   const payload = data.settings || data;
-
   if (!payload) {
     return;
   }
@@ -552,15 +501,21 @@ function renderSettings(data) {
   settings.min_play_gap_ms = clamp(
     payload.min_play_gap_ms ?? settings.min_play_gap_ms,
     0,
-    1_800_000
+    86_400_000
   );
   settings.playlist_name = payload.playlist_name ?? settings.playlist_name;
+
   if (payload.playlist_public !== undefined) {
     settings.playlist_public = Boolean(payload.playlist_public);
   }
   if (payload.auto_add_enabled !== undefined) {
     settings.auto_add_enabled = Boolean(payload.auto_add_enabled);
   }
+}
+
+async function loadPublicStatus() {
+  const payload = await apiRequest("/api/public/status");
+  applyServiceStatus(payload.service || payload);
 }
 
 async function loadSessionData() {
@@ -591,8 +546,9 @@ async function refreshDashboard() {
   }
 
   showMessage("");
+
   try {
-    await loadSessionData();
+    await Promise.all([loadPublicStatus(), loadSessionData()]);
   } catch (error) {
     showMessage(error.message, "error");
   }
@@ -688,39 +644,43 @@ function setActiveView(view) {
 
 async function initialize() {
   if (window.location.protocol === "file:") {
-    serviceStatus.value = "Offline";
-    healthSubtext.value = "Use HTTP server";
-    showMessage(
-      "Open this app via http://<host>:<port>, not file://. API calls are blocked from local files.",
-      "error"
-    );
+    showMessage("Open via http://<host>:<port>, not file://", "error");
     return;
   }
 
   const query = new URLSearchParams(window.location.search);
-  if (query.get("oauth") === "connected") {
+  const oauthState = query.get("oauth");
+
+  if (oauthState === "connected") {
     showMessage("Spotify account connected.");
     window.history.replaceState({}, document.title, "/");
-  } else if (query.get("oauth") === "error") {
-    showMessage("Spotify connection was cancelled or failed.", "error");
+  } else if (oauthState === "error") {
+    showMessage("Spotify connection failed or was cancelled.", "error");
     window.history.replaceState({}, document.title, "/");
+  } else if (oauthState === "limit") {
+    const maxUsers = Number(query.get("max") || service.max_connected_users);
+    showMessage(`User cap reached (${maxUsers}). Existing users can still sign in.`, "error");
+    window.history.replaceState({}, document.title, "/");
+  }
+
+  try {
+    await loadPublicStatus();
+  } catch (error) {
+    showMessage(error.message, "error");
   }
 
   try {
     await loadSessionData();
   } catch (error) {
     if (error.status === 401) {
-      serviceStatus.value = "Not connected";
-      healthSubtext.value = "Connect Spotify to begin";
-      resetDashboard();
-      favorites.value = [];
       account.value = null;
-      showMessage("Connect a Spotify account to begin.", "info");
-    } else {
-      serviceStatus.value = "Error";
-      healthSubtext.value = "API unavailable";
-      showMessage(error.message, "error");
+      favorites.value = [];
+      resetDashboard();
+      showMessage("Connect your Spotify account to begin.", "info");
+      return;
     }
+
+    showMessage(error.message, "error");
   }
 }
 

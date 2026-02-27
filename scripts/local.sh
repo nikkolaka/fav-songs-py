@@ -46,7 +46,12 @@ compose() {
 }
 
 check_health() {
-  local url="http://127.0.0.1:8000/healthz"
+  local app_port
+  app_port="$(awk -F= '/^APP_PORT=/{print $2}' "$ENV_FILE" | tail -n1 | tr -d '[:space:]')"
+  if [[ -z "${app_port:-}" ]]; then
+    app_port="8000"
+  fi
+  local url="http://127.0.0.1:${app_port}/healthz"
   for _ in $(seq 1 30); do
     if curl -fsS "$url" >/dev/null 2>&1; then
       echo "Local app is healthy: $url"
