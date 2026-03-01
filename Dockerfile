@@ -10,6 +10,7 @@ RUN python -m pip install --no-cache-dir -r requirements.txt
 
 COPY app.py ./
 COPY index.html ./
+COPY styles.css ./
 RUN mkdir -p /app/data
 
 EXPOSE 8000

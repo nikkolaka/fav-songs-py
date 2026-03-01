@@ -4,166 +4,165 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>FavSongs</title>
-    <style>
-      body {
-        margin: 1rem auto 3rem;
-        max-width: 960px;
-        padding: 0 1rem;
-        font-family: sans-serif;
-        line-height: 1.4;
-      }
-      section {
-        margin-top: 1.5rem;
-      }
-      table {
-        width: 100%;
-        border-collapse: collapse;
-      }
-      th,
-      td {
-        padding: 0.4rem;
-        border: 1px solid #bbb;
-        text-align: left;
-        vertical-align: top;
-      }
-      form label {
-        display: block;
-        margin: 0.5rem 0;
-      }
-      input,
-      select,
-      button {
-        font: inherit;
-      }
-      input:not([type="checkbox"]),
-      select {
-        width: 100%;
-        max-width: 20rem;
-      }
-      progress {
-        width: 100%;
-        height: 1rem;
-      }
-      .button-row {
-        display: flex;
-        gap: 0.5rem;
-        flex-wrap: wrap;
-      }
-      .message {
-        min-height: 1.5rem;
-      }
-      .muted {
-        color: #555;
-      }
-    </style>
+    <link rel="stylesheet" href="/styles.css?v=20260301a" />
   </head>
   <body>
-    <h1>FavSongs</h1>
-    <p class="muted">Local Spotify tracker.</p>
+    <main>
+      <header class="panel masthead">
+        <div class="masthead-copy">
+          <h1>FavSongs</h1>
+        </div>
+        <div class="button-row">
+          <button id="connect" type="button">Connect Spotify</button>
+          <button id="toggle" type="button">Start Tracker</button>
+        </div>
+      </header>
 
-    <div class="button-row">
-      <button id="connect" type="button">Connect Spotify</button>
-      <button id="toggle" type="button">Start Tracker</button>
-    </div>
+      <p id="message" class="panel message" role="status" aria-live="polite"></p>
 
-    <p id="message" class="message"></p>
+      <section class="panel status-panel">
+        <h2>Status</h2>
+        <dl class="status-grid">
+          <div class="status-card">
+            <dt>Status</dt>
+            <dd id="status">Not connected</dd>
+          </div>
+          <div class="status-card">
+            <dt>Account</dt>
+            <dd id="account">-</dd>
+          </div>
+          <div class="status-card">
+            <dt>Tracker</dt>
+            <dd id="tracker">Stopped</dd>
+          </div>
+          <div class="status-card">
+            <dt>Tracks (24h)</dt>
+            <dd id="plays">0</dd>
+          </div>
+          <div class="status-card status-card-track">
+            <dt>Closest to favorite</dt>
+            <dd class="status-track">
+              <span id="next-title" class="status-primary">-</span>
+              <span id="next-artist" class="status-secondary">No track below threshold</span>
+            </dd>
+          </div>
+        </dl>
+      </section>
 
-    <section>
-      <h2>Status</h2>
-      <dl>
-        <dt>Status</dt>
-        <dd id="status">Not connected</dd>
-        <dt>Account</dt>
-        <dd id="account">-</dd>
-        <dt>Tracker</dt>
-        <dd id="tracker">Stopped</dd>
-        <dt>Tracks (24h)</dt>
-        <dd id="plays">0</dd>
-        <dt>Next favorite</dt>
-        <dd id="next">-</dd>
-      </dl>
-    </section>
+      <details class="panel collapsible" data-focus-panel>
+        <summary>Now Playing</summary>
+        <div class="panel-content stack">
+          <p id="track-title"><strong>No active track</strong></p>
+          <p id="track-artist">Connect Spotify to begin.</p>
+          <progress id="bar" max="100" value="0"></progress>
+          <p id="clock">00:00 / 00:00</p>
+        </div>
+      </details>
 
-    <section>
-      <h2>Now Playing</h2>
-      <p id="track-title"><strong>No active track</strong></p>
-      <p id="track-artist" class="muted">Connect Spotify to begin.</p>
-      <p class="muted">Live</p>
-      <progress id="bar" max="100" value="0"></progress>
-      <p id="clock">00:00 / 00:00</p>
-    </section>
+      <details class="panel collapsible" data-focus-panel>
+        <summary>Recent Plays</summary>
+        <div class="panel-content stack">
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Track</th>
+                  <th>Plays</th>
+                  <th>When</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="recent-body">
+                <tr>
+                  <td colspan="4">No plays yet.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </details>
 
-    <section>
-      <h2>Recent Plays</h2>
-      <table>
-        <thead>
-          <tr>
-            <th>Track</th>
-            <th>Plays</th>
-            <th>When</th>
-            <th>Action</th>
-          </tr>
-        </thead>
-        <tbody id="recent-body">
-          <tr>
-            <td colspan="4">No plays yet.</td>
-          </tr>
-        </tbody>
-      </table>
-    </section>
+      <details class="panel collapsible" data-focus-panel>
+        <summary>Settings</summary>
+        <div class="panel-content stack">
+          <form id="settings-form">
+            <label>
+              Favorite threshold
+              <input id="favorite-threshold" type="number" min="1" max="100" />
+            </label>
+            <label>
+              Completion ratio
+              <input id="completion-ratio" type="number" min="0.5" max="1" step="0.05" />
+            </label>
+            <label>
+              Check interval (seconds)
+              <input id="check-interval" type="number" min="3" max="300" />
+            </label>
+            <label class="field-wide">
+              Playlist name
+              <input id="playlist-name" type="text" maxlength="200" />
+            </label>
+            <label>
+              Playlist privacy
+              <select id="playlist-public">
+                <option value="public">Public</option>
+                <option value="private">Private</option>
+              </select>
+            </label>
+            <label class="checkbox-row">
+              <input id="auto-add" type="checkbox" />
+              Auto add when threshold is reached
+            </label>
+            <div class="form-actions">
+              <button type="submit">Save Settings</button>
+            </div>
+          </form>
+        </div>
+      </details>
 
-    <section>
-      <h2>Settings</h2>
-      <form id="settings-form">
-        <label>
-          Favorite threshold
-          <input id="favorite-threshold" type="number" min="1" max="100" />
-        </label>
-        <label>
-          Completion ratio
-          <input id="completion-ratio" type="number" min="0.5" max="1" step="0.05" />
-        </label>
-        <label>
-          Check interval (seconds)
-          <input id="check-interval" type="number" min="3" max="300" />
-        </label>
-        <label>
-          Playlist name
-          <input id="playlist-name" type="text" maxlength="200" />
-        </label>
-        <label>
-          Playlist privacy
-          <select id="playlist-public">
-            <option value="public">Public</option>
-            <option value="private">Private</option>
-          </select>
-        </label>
-        <label>
-          <input id="auto-add" type="checkbox" />
-          Auto add when threshold is reached
-        </label>
-        <button type="submit">Save Settings</button>
-      </form>
-    </section>
-
-    <section>
-      <h2>Favorites</h2>
-      <table>
-        <thead>
-          <tr>
-            <th>Track</th>
-            <th>Artist</th>
-            <th>Plays</th>
-            <th>Last played</th>
-          </tr>
-        </thead>
-        <tbody id="favorites-body">
-          <tr>
-            <td colspan="4">No favorites yet.</td>
-          </tr>
-        </tbody>
-      </table>
-    </section>
+      <details class="panel collapsible" data-focus-panel>
+        <summary>Favorites</summary>
+        <div class="panel-content stack">
+          <div class="button-row">
+            <button id="remove-selected" type="button" disabled>Remove Selected from Playlist</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th class="selection-cell">Select</th>
+                  <th>
+                    <button type="button" class="sort-button" data-favorites-sort="name">
+                      Track
+                    </button>
+                  </th>
+                  <th>
+                    <button type="button" class="sort-button" data-favorites-sort="artist">
+                      Artist
+                    </button>
+                  </th>
+                  <th>
+                    <button type="button" class="sort-button" data-favorites-sort="occurrences">
+                      Plays
+                    </button>
+                  </th>
+                  <th>
+                    <button type="button" class="sort-button" data-favorites-sort="last_played">
+                      Last played
+                    </button>
+                  </th>
+                </tr>
+              </thead>
+              <tbody id="favorites-body">
+                <tr>
+                  <td colspan="5">No favorites yet.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </details>
+    </main>
 
     <script>
       const $ = (id) => document.getElementById(id);
@@ -175,13 +174,15 @@
         account: $('account'),
         tracker: $('tracker'),
         plays: $('plays'),
-        next: $('next'),
+        nextTitle: $('next-title'),
+        nextArtist: $('next-artist'),
         title: $('track-title'),
         artist: $('track-artist'),
         bar: $('bar'),
         clock: $('clock'),
         recentBody: $('recent-body'),
         favoritesBody: $('favorites-body'),
+        removeSelected: $('remove-selected'),
         form: $('settings-form'),
         favoriteThreshold: $('favorite-threshold'),
         completionRatio: $('completion-ratio'),
@@ -189,12 +190,24 @@
         playlistName: $('playlist-name'),
         playlistPublic: $('playlist-public'),
         autoAdd: $('auto-add'),
+        favoriteSortButtons: Array.from(document.querySelectorAll('[data-favorites-sort]')),
+        focusPanels: Array.from(document.querySelectorAll('[data-focus-panel]')),
       };
 
       let state = null;
+      let favoriteRows = [];
       let livePlayback = null;
       let loadInFlight = false;
       let settingsDirty = false;
+      let selectedFavoriteIds = new Set();
+      let lastSelectedFavoriteId = null;
+      let removeConfirmArmed = false;
+      let removeConfirmTimer = null;
+
+      const favoriteSort = {
+        key: 'occurrences',
+        direction: 'desc',
+      };
 
       async function api(path, options = {}) {
         const request = { ...options, headers: { ...(options.headers || {}) } };
@@ -214,7 +227,11 @@
 
       function msg(text, isError = false) {
         ui.message.textContent = text || '';
-        ui.message.style.color = isError ? '#b00020' : '';
+        if (!text) {
+          delete ui.message.dataset.tone;
+          return;
+        }
+        ui.message.dataset.tone = isError ? 'error' : 'info';
       }
 
       function clock(ms) {
@@ -284,17 +301,17 @@
       }
 
       function renderRecentPlays(data) {
-        const threshold = Number(data.settings.favorite_threshold);
         if (!data.recent_plays.length) {
           ui.recentBody.innerHTML = '<tr><td colspan="4">No plays yet.</td></tr>';
           return;
         }
 
         ui.recentBody.innerHTML = data.recent_plays.map((item) => {
-          const canAdd = Number(item.plays) < threshold;
-          const action = canAdd
-            ? '<button type="button" data-track-id="' + esc(item.track_id) + '">Add</button>'
-            : 'Favorite';
+          const action = item.in_playlist
+            ? 'In playlist'
+            : '<button type="button" data-track-id="' + esc(item.track_id) + '"' +
+              (state && state.connected ? '' : ' disabled') +
+              '>Add</button>';
           return (
             '<tr>' +
             '<td>' + esc(item.artist + ' - ' + item.name) + '</td>' +
@@ -306,31 +323,171 @@
         }).join('');
       }
 
-      function renderFavorites(data) {
-        if (!data.favorites.length) {
-          ui.favoritesBody.innerHTML = '<tr><td colspan="4">No favorites yet.</td></tr>';
+      function normalizeFavorite(item) {
+        return {
+          track_id: String(item.track_id || ''),
+          name: String(item.name || 'Unknown Track'),
+          artist: String(item.artist || 'Unknown Artist'),
+          occurrences: Number(item.occurrences) || 0,
+          last_played: Number(item.last_played) || 0,
+          in_playlist: Boolean(item.in_playlist),
+        };
+      }
+
+      function favoriteValue(item, key) {
+        if (key === 'name' || key === 'artist') {
+          return item[key].toLowerCase();
+        }
+        return Number(item[key]) || 0;
+      }
+
+      function clearRemoveConfirmation() {
+        removeConfirmArmed = false;
+        if (removeConfirmTimer) {
+          window.clearTimeout(removeConfirmTimer);
+          removeConfirmTimer = null;
+        }
+      }
+
+      function armRemoveConfirmation() {
+        clearRemoveConfirmation();
+        removeConfirmArmed = true;
+        removeConfirmTimer = window.setTimeout(() => {
+          clearRemoveConfirmation();
+          updateRemoveSelectedButton();
+        }, 4000);
+      }
+
+      function updateRemoveSelectedButton() {
+        const count = selectedFavoriteIds.size;
+        ui.removeSelected.disabled = !state || !state.connected || count === 0;
+        if (count === 0) {
+          ui.removeSelected.textContent = 'Remove Selected from Playlist';
           return;
         }
 
-        ui.favoritesBody.innerHTML = data.favorites.map((item) => (
-          '<tr>' +
-          '<td>' + esc(item.name) + '</td>' +
-          '<td>' + esc(item.artist) + '</td>' +
-          '<td>' + item.occurrences + '</td>' +
-          '<td>' + ago(item.last_played) + '</td>' +
-          '</tr>'
-        )).join('');
+        ui.removeSelected.textContent = removeConfirmArmed
+          ? 'Click Again to Confirm (' + count + ')'
+          : 'Remove Selected from Playlist (' + count + ')';
+      }
+
+      function selectedFavoriteOrder() {
+        return Array.from(ui.favoritesBody.querySelectorAll('[data-remove-track-id]'))
+          .map((input) => input.dataset.removeTrackId)
+          .filter(Boolean);
+      }
+
+      function setFavoriteSelection(trackId, checked) {
+        if (!trackId) {
+          return;
+        }
+        if (checked) {
+          selectedFavoriteIds.add(trackId);
+        } else {
+          selectedFavoriteIds.delete(trackId);
+        }
+      }
+
+      function applyFavoriteSelectionRange(startId, endId, checked) {
+        const orderedIds = selectedFavoriteOrder();
+        const startIndex = orderedIds.indexOf(startId);
+        const endIndex = orderedIds.indexOf(endId);
+        if (startIndex === -1 || endIndex === -1) {
+          setFavoriteSelection(endId, checked);
+          return;
+        }
+
+        const from = Math.min(startIndex, endIndex);
+        const to = Math.max(startIndex, endIndex);
+        for (const trackId of orderedIds.slice(from, to + 1)) {
+          setFavoriteSelection(trackId, checked);
+        }
+      }
+
+      function compareFavorites(a, b) {
+        const direction = favoriteSort.direction === 'asc' ? 1 : -1;
+        const left = favoriteValue(a, favoriteSort.key);
+        const right = favoriteValue(b, favoriteSort.key);
+
+        if (left < right) return -1 * direction;
+        if (left > right) return 1 * direction;
+        if (a.in_playlist !== b.in_playlist) return a.in_playlist ? -1 : 1;
+        if (a.occurrences !== b.occurrences) return b.occurrences - a.occurrences;
+        if (a.last_played !== b.last_played) return b.last_played - a.last_played;
+
+        const artistCompare = a.artist.localeCompare(b.artist);
+        if (artistCompare) return artistCompare;
+        return a.name.localeCompare(b.name);
+      }
+
+      function refreshFavoriteSortButtons() {
+        ui.favoriteSortButtons.forEach((button) => {
+          const isActive = button.dataset.favoritesSort === favoriteSort.key;
+          button.classList.toggle('active', isActive);
+          button.dataset.arrow = isActive
+            ? (favoriteSort.direction === 'asc' ? '^' : 'v')
+            : '<>';
+          button.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+        });
+      }
+
+      function renderFavorites(items) {
+        favoriteRows = items.map(normalizeFavorite);
+        const removableIds = new Set(
+          favoriteRows
+            .filter((item) => item.in_playlist)
+            .map((item) => item.track_id)
+        );
+        selectedFavoriteIds = new Set(
+          Array.from(selectedFavoriteIds).filter((trackId) => removableIds.has(trackId))
+        );
+        if (lastSelectedFavoriteId && !removableIds.has(lastSelectedFavoriteId)) {
+          lastSelectedFavoriteId = null;
+        }
+        refreshFavoriteSortButtons();
+        updateRemoveSelectedButton();
+
+        if (!favoriteRows.length) {
+          ui.favoritesBody.innerHTML = '<tr><td colspan="5">No favorites yet.</td></tr>';
+          return;
+        }
+
+        const sortedRows = [...favoriteRows].sort(compareFavorites);
+        ui.favoritesBody.innerHTML = sortedRows.map((item) => {
+          const checkbox = item.in_playlist
+            ? '<td class="selection-cell"><input type="checkbox" data-remove-track-id="' +
+              esc(item.track_id) + '"' +
+              (selectedFavoriteIds.has(item.track_id) ? ' checked' : '') +
+              ' aria-label="Select ' + esc(item.name) + '" /></td>'
+            : '<td class="selection-cell"></td>';
+          return (
+            '<tr>' +
+            checkbox +
+            '<td><div class="track-cell"><span>' + esc(item.name) + '</span></div></td>' +
+            '<td>' + esc(item.artist) + '</td>' +
+            '<td>' + item.occurrences + '</td>' +
+            '<td>' + ago(item.last_played) + '</td>' +
+            '</tr>'
+          );
+        }).join('');
       }
 
       function render(data) {
         state = data;
+        ui.connect.textContent = data.connected ? 'Logout' : 'Connect Spotify';
         ui.status.textContent = data.connected ? 'Connected' : 'Not connected';
         ui.account.textContent = data.account ? data.account.display_name : '-';
-        ui.tracker.textContent = data.tracker_running ? 'Running' : 'Stopped';
+        ui.tracker.textContent = data.tracker_running ? 'Started' : 'Stopped';
         ui.toggle.textContent = data.tracker_running ? 'Stop Tracker' : 'Start Tracker';
         ui.toggle.disabled = !data.connected;
         ui.plays.textContent = String(data.stats.tracks_counted_24h);
-        ui.next.textContent = data.stats.next_favorite + ' plays';
+        if (data.stats.next_favorite) {
+          ui.nextTitle.textContent = data.stats.next_favorite.name;
+          ui.nextArtist.textContent = data.stats.next_favorite.artist;
+        } else {
+          ui.nextTitle.textContent = '-';
+          ui.nextArtist.textContent = 'No track below threshold';
+        }
 
         const now = data.now_playing;
         if (now && !now.error && now.name) {
@@ -349,7 +506,7 @@
 
         syncSettingsForm(data.settings);
         renderRecentPlays(data);
-        renderFavorites(data);
+        renderFavorites(data.favorites);
       }
 
       async function load() {
@@ -367,6 +524,16 @@
       ui.connect.addEventListener('click', async () => {
         try {
           msg('');
+          if (state && state.connected) {
+            clearRemoveConfirmation();
+            selectedFavoriteIds.clear();
+            lastSelectedFavoriteId = null;
+            await api('/api/auth/logout', { method: 'POST' });
+            msg('Logged out.');
+            await load();
+            return;
+          }
+
           const data = await api('/api/auth/start', { method: 'POST' });
           window.location.href = data.auth_url;
         } catch (error) {
@@ -434,11 +601,102 @@
         }
       });
 
+      ui.favoritesBody.addEventListener('click', (event) => {
+        const input = event.target.closest('[data-remove-track-id]');
+        if (!input) {
+          return;
+        }
+
+        const trackId = input.dataset.removeTrackId;
+        if (!trackId) {
+          return;
+        }
+
+        if (event.shiftKey && lastSelectedFavoriteId && lastSelectedFavoriteId !== trackId) {
+          applyFavoriteSelectionRange(lastSelectedFavoriteId, trackId, input.checked);
+        } else {
+          setFavoriteSelection(trackId, input.checked);
+        }
+
+        lastSelectedFavoriteId = trackId;
+        clearRemoveConfirmation();
+        renderFavorites(favoriteRows);
+      });
+
+      ui.removeSelected.addEventListener('click', async () => {
+        const trackIds = Array.from(selectedFavoriteIds);
+        if (!trackIds.length) {
+          return;
+        }
+
+        if (!removeConfirmArmed) {
+          armRemoveConfirmation();
+          updateRemoveSelectedButton();
+          msg('Click the remove button again within 4 seconds to confirm.');
+          return;
+        }
+
+        try {
+          clearRemoveConfirmation();
+          updateRemoveSelectedButton();
+          msg('');
+          const result = await api('/api/favorites/remove', {
+            method: 'POST',
+            body: JSON.stringify({ track_ids: trackIds }),
+          });
+          selectedFavoriteIds.clear();
+          lastSelectedFavoriteId = null;
+          msg(
+            'Removed ' + result.removed + ' track' +
+            (result.removed === 1 ? '' : 's') +
+            ' from the playlist.'
+          );
+          await load();
+        } catch (error) {
+          clearRemoveConfirmation();
+          updateRemoveSelectedButton();
+          msg(error.message, true);
+        }
+      });
+
+      ui.favoriteSortButtons.forEach((button) => {
+        button.addEventListener('click', () => {
+          const nextKey = button.dataset.favoritesSort;
+          if (!nextKey) {
+            return;
+          }
+
+          if (favoriteSort.key === nextKey) {
+            favoriteSort.direction = favoriteSort.direction === 'asc' ? 'desc' : 'asc';
+          } else {
+            favoriteSort.key = nextKey;
+            favoriteSort.direction = (nextKey === 'name' || nextKey === 'artist') ? 'asc' : 'desc';
+          }
+
+          renderFavorites(favoriteRows);
+        });
+      });
+
+      ui.focusPanels.forEach((panel) => {
+        panel.addEventListener('toggle', () => {
+          if (!panel.open) {
+            return;
+          }
+          ui.focusPanels.forEach((other) => {
+            if (other !== panel) {
+              other.open = false;
+            }
+          });
+        });
+      });
+
       const oauth = new URLSearchParams(window.location.search).get('oauth');
       if (oauth === 'connected') msg('Spotify connected.');
       if (oauth === 'error') msg('Spotify sign-in failed.', true);
       if (oauth) history.replaceState({}, '', '/');
 
+      refreshFavoriteSortButtons();
+      updateRemoveSelectedButton();
       load().catch((error) => msg(error.message, true));
       setInterval(renderPlaybackFrame, 250);
       setInterval(() => {
