@@ -1,0 +1,27 @@
+services:
+  favsongs:
+    image: ${FAVSONGS_IMAGE:?Set FAVSONGS_IMAGE in .env}
+    pull_policy: always
+    environment:
+      CLIENT_ID: ${CLIENT_ID:?Set CLIENT_ID in .env}
+      CLIENT_SECRET: ${CLIENT_SECRET:?Set CLIENT_SECRET in .env}
+      REDIRECT_URI: ${REDIRECT_URI:?Set REDIRECT_URI in .env}
+      SPOTIFY_SCOPE: ${SPOTIFY_SCOPE:-user-read-playback-state,user-read-currently-playing,playlist-modify-public,playlist-modify-private}
+      DEFAULT_PLAYLIST_NAME: ${DEFAULT_PLAYLIST_NAME:-Favourite Songs - Whatsit}
+      FAVSONGS_DATA_DIR: ${FAVSONGS_DATA_DIR:-/app/data}
+      FAVSONGS_DB_PATH: ${FAVSONGS_DB_PATH:-/app/data/favsongs.db}
+    ports:
+      - "${APP_PORT:-8090}:8000"
+    volumes:
+      - favsongs_data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  favsongs_data:
+    name: favsongs_data
