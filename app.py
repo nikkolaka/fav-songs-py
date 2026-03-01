@@ -25,7 +25,8 @@ DEFAULT_SCOPE = (
     "playlist-modify-private"
 )
 STATE_TTL_SECONDS = 600
-PLAYLIST_CACHE_TTL_SECONDS = 300
+PLAYLIST_CACHE_TTL_SECONDS = 30
+PLAYLIST_LOOKUP_CACHE_TTL_SECONDS = 30
 
 
 def _now_seconds() -> int:
@@ -199,6 +200,7 @@ class Database:
             self._set_state("access_token", access_token)
             self._set_state("refresh_token", refresh_token)
             self._set_state("expires_at", str(expires_at))
+            self._set_state("tracker_running", "1")
             self.conn.commit()
 
     def update_tokens(
@@ -211,6 +213,15 @@ class Database:
             self._set_state("access_token", access_token)
             self._set_state("refresh_token", refresh_token)
             self._set_state("expires_at", str(expires_at))
+            self.conn.commit()
+
+    def clear_connection(self) -> None:
+        with self.lock:
+            self._set_state("spotify_user_id", None)
+            self._set_state("display_name", None)
+            self._set_state("access_token", None)
+            self._set_state("refresh_token", None)
+            self._set_state("expires_at", None)
             self.conn.commit()
 
     def save_oauth_state(self, state: str, expires_at: int) -> None:
@@ -236,6 +247,10 @@ class Database:
     def tracker_running(self) -> bool:
         with self.lock:
             return self._get_state("tracker_running") == "1"
+
+    def has_tracker_state(self) -> bool:
+        with self.lock:
+            return self._get_state("tracker_running") is not None
 
     def set_tracker_running(self, running: bool) -> None:
         with self.lock:
@@ -359,13 +374,6 @@ class Database:
             ).fetchone()
         return int(row["count"] if row else 0)
 
-    def max_occurrence(self) -> int:
-        with self.lock:
-            row = self.conn.execute(
-                "SELECT COALESCE(MAX(occurrences), 0) AS value FROM favorites"
-            ).fetchone()
-        return int(row["value"] if row else 0)
-
     def recent_plays(self, limit: int = 8) -> list[dict[str, Any]]:
         with self.lock:
             rows = self.conn.execute(
@@ -380,6 +388,16 @@ class Database:
                 (limit,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def favorites_index(self) -> dict[str, dict[str, Any]]:
+        with self.lock:
+            rows = self.conn.execute(
+                """
+                SELECT track_id, name, artist, occurrences, last_played
+                FROM favorites
+                """
+            ).fetchall()
+        return {str(row["track_id"]): dict(row) for row in rows}
 
     def favorites(self, minimum_occurrences: int = 1, limit: int = 200) -> list[dict[str, Any]]:
         with self.lock:
@@ -497,6 +515,7 @@ class RuntimeState:
     timestamp_ms: int = 0
     play_instance_id: Optional[str] = None
     play_recorded: bool = False
+    is_playing: bool = False
 
 
 class Tracker:
@@ -506,6 +525,7 @@ class Tracker:
         self.task: Optional[asyncio.Task] = None
         self.state = RuntimeState()
         self.playlist_cache: Optional[dict[str, Any]] = None
+        self.playlist_lookup_cache: Optional[dict[str, Any]] = None
 
     async def startup(self) -> None:
         if self.db.tracker_running() and self.db.is_connected():
@@ -548,17 +568,49 @@ class Tracker:
     def _is_complete(self, progress_ms: int, duration_ms: int, ratio: float) -> bool:
         return duration_ms > 0 and (progress_ms / duration_ms) >= ratio
 
-    def _playlist_id(self, settings: dict[str, Any], client: spotipy.Spotify) -> Optional[str]:
+    def _cache_playlist_lookup(
+        self, playlist_name: str, playlist_id: Optional[str]
+    ) -> Optional[str]:
+        self.playlist_lookup_cache = {
+            "playlist_name": playlist_name,
+            "playlist_id": playlist_id,
+            "cached_at": time.time(),
+        }
+        return playlist_id
+
+    def invalidate_playlist_cache(self) -> None:
+        self.playlist_cache = None
+        self.playlist_lookup_cache = None
+
+    def _playlist_id(
+        self,
+        settings: dict[str, Any],
+        client: spotipy.Spotify,
+        create_if_missing: bool = True,
+    ) -> Optional[str]:
+        name = str(settings.get("playlist_name") or self.db.default_playlist_name)
         saved = settings.get("playlist_id")
         if saved:
-            return str(saved)
+            return self._cache_playlist_lookup(name, str(saved))
+
+        if self.playlist_lookup_cache:
+            cache_name = str(self.playlist_lookup_cache.get("playlist_name") or "")
+            age = time.time() - float(self.playlist_lookup_cache.get("cached_at", 0))
+            if (
+                cache_name == name
+                and age < PLAYLIST_LOOKUP_CACHE_TTL_SECONDS
+            ):
+                cached_id = self.playlist_lookup_cache.get("playlist_id")
+                if cached_id:
+                    return str(cached_id)
+                if not create_if_missing:
+                    return None
 
         profile = client.me()
         spotify_user_id = profile.get("id")
         if not spotify_user_id:
             return None
 
-        name = str(settings.get("playlist_name") or self.db.default_playlist_name)
         public = bool(settings.get("playlist_public", True))
 
         results = client.user_playlists(spotify_user_id, limit=50)
@@ -567,11 +619,14 @@ class Tracker:
                 if playlist and playlist.get("name") == name and playlist.get("id"):
                     playlist_id = str(playlist["id"])
                     self.db.update_settings({"playlist_id": playlist_id})
-                    return playlist_id
+                    return self._cache_playlist_lookup(name, playlist_id)
             if results.get("next"):
                 results = client.next(results)
             else:
                 break
+
+        if not create_if_missing:
+            return self._cache_playlist_lookup(name, None)
 
         created = client.user_playlist_create(
             spotify_user_id,
@@ -583,26 +638,42 @@ class Tracker:
         if created_id:
             playlist_id = str(created_id)
             self.db.update_settings({"playlist_id": playlist_id})
-            return playlist_id
+            return self._cache_playlist_lookup(name, playlist_id)
         return None
 
-    def _playlist_tracks(self, playlist_id: str, client: spotipy.Spotify) -> set[str]:
+    def _playlist_entries(
+        self, playlist_id: str, client: spotipy.Spotify
+    ) -> list[dict[str, str]]:
         now = time.time()
         if (
             self.playlist_cache
             and self.playlist_cache.get("playlist_id") == playlist_id
             and (now - float(self.playlist_cache.get("cached_at", 0))) < PLAYLIST_CACHE_TTL_SECONDS
         ):
-            return self.playlist_cache["track_ids"]
+            return list(self.playlist_cache["tracks"])
 
+        tracks: list[dict[str, str]] = []
         track_ids: set[str] = set()
         results = client.playlist_tracks(playlist_id, limit=100)
         while results:
             for item in results.get("items", []):
                 track = item.get("track") if item else None
                 track_id = track.get("id") if track else None
-                if track_id:
-                    track_ids.add(track_id)
+                if not track_id:
+                    continue
+                track_id = str(track_id)
+                if track_id in track_ids:
+                    continue
+                artists = track.get("artists") or []
+                artist = artists[0].get("name") if artists and artists[0] else "Unknown Artist"
+                track_ids.add(track_id)
+                tracks.append(
+                    {
+                        "track_id": track_id,
+                        "name": str(track.get("name") or "Unknown Track"),
+                        "artist": str(artist or "Unknown Artist"),
+                    }
+                )
             if results.get("next"):
                 results = client.next(results)
             else:
@@ -610,10 +681,152 @@ class Tracker:
 
         self.playlist_cache = {
             "playlist_id": playlist_id,
+            "tracks": tracks,
             "track_ids": track_ids,
             "cached_at": now,
         }
-        return track_ids
+        return list(tracks)
+
+    def _playlist_tracks(self, playlist_id: str, client: spotipy.Spotify) -> set[str]:
+        self._playlist_entries(playlist_id, client)
+        if not self.playlist_cache:
+            return set()
+        return set(self.playlist_cache["track_ids"])
+
+    def playlist_snapshot(self) -> dict[str, dict[str, str]]:
+        if not self.db.is_connected():
+            return {}
+
+        try:
+            settings = self.db.settings()
+            client = self.spotify.client()
+            playlist_id = self._playlist_id(settings, client, create_if_missing=False)
+            if not playlist_id:
+                return {}
+            return {
+                entry["track_id"]: entry
+                for entry in self._playlist_entries(playlist_id, client)
+            }
+        except Exception as exc:
+            print(f"[WARN] Could not sync playlist favorites: {exc}")
+            return {}
+
+    def recent_plays_snapshot(self, limit: int = 8) -> list[dict[str, Any]]:
+        rows = self.db.recent_plays(limit)
+        live_row = self._live_recent_play_snapshot()
+
+        if live_row:
+            existing = next(
+                (
+                    item
+                    for item in rows
+                    if str(item.get("track_id") or "") == live_row["track_id"]
+                ),
+                None,
+            )
+            if existing:
+                existing["name"] = live_row["name"]
+                existing["artist"] = live_row["artist"]
+                existing["plays"] = max(
+                    int(existing.get("plays") or 0),
+                    int(live_row["plays"]),
+                )
+                existing["played_at"] = max(
+                    int(existing.get("played_at") or 0),
+                    int(live_row["played_at"]),
+                )
+            else:
+                rows.append(live_row)
+
+            rows.sort(key=lambda item: int(item.get("played_at") or 0), reverse=True)
+            rows = rows[:limit]
+
+        if not rows:
+            return rows
+
+        playlist_rows = self.playlist_snapshot()
+        for item in rows:
+            item["in_playlist"] = item["track_id"] in playlist_rows
+        return rows
+
+    def closest_to_favorite_snapshot(self, threshold: int) -> Optional[dict[str, Any]]:
+        if threshold <= 1:
+            return None
+
+        playlist_rows = self.playlist_snapshot()
+        candidates = [
+            item
+            for item in self.db.favorites_index().values()
+            if (
+                int(item.get("occurrences") or 0) < threshold
+                and str(item.get("track_id") or "") not in playlist_rows
+            )
+        ]
+        if not candidates:
+            return None
+
+        candidates.sort(
+            key=lambda item: (
+                -int(item.get("occurrences") or 0),
+                -int(item.get("last_played") or 0),
+                str(item.get("artist") or "").lower(),
+                str(item.get("name") or "").lower(),
+            )
+        )
+        return dict(candidates[0])
+
+    def favorites_snapshot(self, minimum_occurrences: int = 1) -> list[dict[str, Any]]:
+        local_rows = self.db.favorites_index()
+        playlist_rows = self.playlist_snapshot()
+        merged: dict[str, dict[str, Any]] = {}
+
+        for track_id, item in local_rows.items():
+            if int(item["occurrences"]) < minimum_occurrences:
+                continue
+            merged[track_id] = {
+                **item,
+                "in_playlist": track_id in playlist_rows,
+            }
+
+        if not playlist_rows:
+            return self._sort_favorites(merged.values())
+
+        for entry in playlist_rows.values():
+            track_id = entry["track_id"]
+            local_item = local_rows.get(track_id)
+            if track_id in merged:
+                merged[track_id]["in_playlist"] = True
+                continue
+            if local_item:
+                merged[track_id] = {
+                    **local_item,
+                    "in_playlist": True,
+                }
+                continue
+            merged[track_id] = {
+                "track_id": track_id,
+                "name": entry["name"],
+                "artist": entry["artist"],
+                "occurrences": 0,
+                "last_played": 0,
+                "in_playlist": True,
+            }
+
+        return self._sort_favorites(merged.values())
+
+    def _sort_favorites(
+        self, items: Any
+    ) -> list[dict[str, Any]]:
+        return sorted(
+            list(items),
+            key=lambda item: (
+                0 if item.get("in_playlist") else 1,
+                -int(item.get("occurrences") or 0),
+                -int(item.get("last_played") or 0),
+                str(item.get("artist") or "").lower(),
+                str(item.get("name") or "").lower(),
+            ),
+        )
 
     def add_track(self, track_id: str, allow_duplicate: bool = False) -> bool:
         settings = self.db.settings()
@@ -627,8 +840,41 @@ class Tracker:
             return False
 
         client.playlist_add_items(playlist_id, [track_id], position=0)
-        existing.add(track_id)
+        self.invalidate_playlist_cache()
         return True
+
+    def remove_tracks(self, track_ids: list[str]) -> int:
+        requested: list[str] = []
+        seen: set[str] = set()
+        for track_id in track_ids:
+            value = str(track_id or "").strip()
+            if not value or value in seen:
+                continue
+            requested.append(value)
+            seen.add(value)
+
+        if not requested:
+            return 0
+
+        settings = self.db.settings()
+        client = self.spotify.client()
+        playlist_id = self._playlist_id(settings, client, create_if_missing=False)
+        if not playlist_id:
+            return 0
+
+        existing = self._playlist_tracks(playlist_id, client)
+        removable = [track_id for track_id in requested if track_id in existing]
+        if not removable:
+            return 0
+
+        for start in range(0, len(removable), 100):
+            client.playlist_remove_all_occurrences_of_items(
+                playlist_id,
+                removable[start : start + 100],
+            )
+
+        self.invalidate_playlist_cache()
+        return len(removable)
 
     def _set_track(
         self,
@@ -639,6 +885,7 @@ class Tracker:
         duration_ms: int,
         timestamp_ms: int,
         play_instance_id: Optional[str],
+        is_playing: bool,
     ) -> None:
         self.state.track_id = track_id
         self.state.track_name = name
@@ -648,6 +895,30 @@ class Tracker:
         self.state.timestamp_ms = timestamp_ms
         self.state.play_instance_id = play_instance_id
         self.state.play_recorded = False
+        self.state.is_playing = is_playing
+
+    def _live_recent_play_snapshot(self) -> Optional[dict[str, Any]]:
+        if not self.task or self.task.done():
+            return None
+        if not self.state.is_playing:
+            return None
+        if self.state.progress_ms < 10_000:
+            return None
+        if not self.state.track_id or not self.state.track_name or not self.state.track_artist:
+            return None
+
+        current = self.db.favorites_index().get(self.state.track_id)
+        plays = int(current["occurrences"]) if current else 0
+        if not self.state.play_recorded:
+            plays += 1
+
+        return {
+            "track_id": self.state.track_id,
+            "name": self.state.track_name,
+            "artist": self.state.track_artist,
+            "plays": plays,
+            "played_at": _now_millis(),
+        }
 
     def _finalize_track(self) -> None:
         if self.state.play_recorded:
@@ -692,16 +963,19 @@ class Tracker:
     def _tick(self) -> None:
         playback = self.spotify.client().current_playback()
         if not playback:
+            self.state.is_playing = False
             return
 
         track = playback.get("item")
         if not track or not track.get("id"):
+            self.state.is_playing = False
             return
 
         track_id = str(track["id"])
         track_name = str(track.get("name") or "Unknown Track")
         artists = track.get("artists") or []
         track_artist = artists[0].get("name") if artists and artists[0] else "Unknown Artist"
+        is_playing = bool(playback.get("is_playing"))
 
         progress_ms = int(playback.get("progress_ms") or 0)
         duration_ms = int(track.get("duration_ms") or 0)
@@ -717,6 +991,7 @@ class Tracker:
                 duration_ms,
                 timestamp_ms,
                 play_instance_id,
+                is_playing,
             )
             return
 
@@ -730,6 +1005,7 @@ class Tracker:
                 duration_ms,
                 timestamp_ms,
                 play_instance_id,
+                is_playing,
             )
             return
 
@@ -749,9 +1025,11 @@ class Tracker:
                 duration_ms,
                 timestamp_ms,
                 play_instance_id,
+                is_playing,
             )
             return
 
+        self.state.is_playing = is_playing
         if progress_ms > self.state.progress_ms:
             self.state.progress_ms = progress_ms
         if duration_ms:
@@ -785,6 +1063,10 @@ class SettingsUpdate(BaseModel):
     playlist_name: Optional[str] = Field(default=None, min_length=1, max_length=200)
     playlist_public: Optional[bool] = None
     auto_add_enabled: Optional[bool] = None
+
+
+class TrackSelection(BaseModel):
+    track_ids: list[str] = Field(min_length=1, max_length=100)
 
 
 def _format_now_playing(playback: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
@@ -823,6 +1105,8 @@ def _safe_now_playing() -> Optional[dict[str, Any]]:
 def _payload() -> dict[str, Any]:
     settings = database.settings()
     threshold = int(settings["favorite_threshold"])
+    closest_track = tracker.closest_to_favorite_snapshot(threshold)
+
     return {
         "connected": database.is_connected(),
         "account": database.account(),
@@ -830,15 +1114,16 @@ def _payload() -> dict[str, Any]:
         "now_playing": _safe_now_playing(),
         "stats": {
             "tracks_counted_24h": database.count_plays_since(_now_millis() - 86_400_000),
-            "next_favorite": max(threshold - database.max_occurrence(), 0),
+            "next_favorite": closest_track,
         },
         "settings": settings,
-        "recent_plays": database.recent_plays(),
-        "favorites": database.favorites(minimum_occurrences=threshold),
+        "recent_plays": tracker.recent_plays_snapshot(),
+        "favorites": tracker.favorites_snapshot(minimum_occurrences=threshold),
     }
 
 
 INDEX_FILE = os.path.join(os.path.dirname(__file__), "index.html")
+STYLES_FILE = os.path.join(os.path.dirname(__file__), "styles.css")
 
 
 config = AppConfig.from_env()
@@ -851,6 +1136,8 @@ app = FastAPI(title="FavSongs", docs_url=None, redoc_url=None, openapi_url=None)
 
 @app.on_event("startup")
 async def startup_event() -> None:
+    if database.is_connected() and not database.has_tracker_state():
+        database.set_tracker_running(True)
     await tracker.startup()
 
 
@@ -865,6 +1152,11 @@ async def index() -> FileResponse:
     return FileResponse(INDEX_FILE)
 
 
+@app.get("/styles.css", response_class=FileResponse)
+async def styles() -> FileResponse:
+    return FileResponse(STYLES_FILE)
+
+
 @app.get("/healthz")
 async def healthz() -> PlainTextResponse:
     return PlainTextResponse("ok")
@@ -872,6 +1164,8 @@ async def healthz() -> PlainTextResponse:
 
 @app.get("/api/state")
 async def api_state() -> dict[str, Any]:
+    if database.is_connected() and not database.has_tracker_state():
+        await tracker.start()
     return _payload()
 
 
@@ -880,6 +1174,15 @@ async def auth_start() -> dict[str, str]:
     state = secrets.token_urlsafe(32)
     database.save_oauth_state(state, _now_seconds() + STATE_TTL_SECONDS)
     return {"auth_url": spotify_service.auth_url(state)}
+
+
+@app.post("/api/auth/logout")
+async def auth_logout() -> dict[str, bool]:
+    await tracker.stop()
+    database.clear_connection()
+    database.update_settings({"playlist_id": None})
+    tracker.invalidate_playlist_cache()
+    return {"connected": False}
 
 
 @app.get("/api/auth/callback")
@@ -895,6 +1198,7 @@ async def auth_callback(
     if not database.consume_oauth_state(state):
         raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
     spotify_service.connect(code)
+    await tracker.start()
     return RedirectResponse(url="/?oauth=connected")
 
 
@@ -922,9 +1226,25 @@ async def stop_tracker() -> dict[str, bool]:
 async def add_favorite(track_id: str) -> dict[str, bool]:
     if not database.is_connected():
         raise HTTPException(status_code=400, detail="Connect Spotify first")
-    if not tracker.add_track(track_id, allow_duplicate=True):
-        raise HTTPException(status_code=400, detail="Could not add that track to the playlist")
+    if not tracker.add_track(track_id, allow_duplicate=False):
+        raise HTTPException(
+            status_code=400,
+            detail="That track is already in the playlist or could not be added",
+        )
     return {"queued": True}
+
+
+@app.post("/api/favorites/remove")
+async def remove_favorites(payload: TrackSelection) -> dict[str, int]:
+    if not database.is_connected():
+        raise HTTPException(status_code=400, detail="Connect Spotify first")
+    removed = tracker.remove_tracks(payload.track_ids)
+    if not removed:
+        raise HTTPException(
+            status_code=400,
+            detail="None of the selected tracks are currently in the playlist",
+        )
+    return {"removed": removed}
 
 
 @app.exception_handler(HTTPException)
