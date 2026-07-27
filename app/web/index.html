@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>listen</title>
+    <link rel="stylesheet" href="/pico.min.css" />
+    <link rel="stylesheet" href="/overrides.css" />
+  </head>
+  <body>
+    <main class="container">
+      <header>
+        <hgroup>
+          <h1>listen</h1>
+          <p>Songs you replay become a playlist. Discoveries become a monthly archive.</p>
+        </hgroup>
+        <p id="account" hidden>
+          <span id="account-name"></span>
+          <button id="logout" class="secondary outline">Log out</button>
+        </p>
+      </header>
+
+      <article id="login">
+        <p id="login-error" hidden></p>
+        <p>
+          Log in with Spotify to start tracking. Nothing is counted until you do, and
+          the only things written to your account are the playlists below.
+        </p>
+        <button id="login-button">Log in with Spotify</button>
+        <footer>
+          <small>
+            This runs in Spotify's Development Mode, which allows five authorised
+            accounts. Your Spotify account email has to be on the app's allowlist.
+          </small>
+        </footer>
+      </article>
+
+      <div id="app" hidden>
+        <p id="banner" hidden></p>
+
+        <article>
+          <header>
+            <strong>Now playing</strong>
+            <label class="inline-switch">
+              <input type="checkbox" id="tracker-toggle" role="switch" />
+              <span id="tracker-label">Tracking</span>
+            </label>
+          </header>
+          <div id="now-playing"></div>
+          <footer>
+            <div class="grid">
+              <div><small>Plays in 24h</small><br /><strong id="stat-plays">0</strong></div>
+              <div><small>Tracks seen</small><br /><strong id="stat-tracks">0</strong></div>
+              <div><small>Next up</small><br /><span id="stat-next">&mdash;</span></div>
+            </div>
+          </footer>
+        </article>
+
+        <article>
+          <header>
+            <strong>Discovery</strong>
+            <span class="muted" id="discovery-month"></span>
+          </header>
+
+          <div id="context-prompt" hidden>
+            <p>
+              You finished a track from a playlist we can't identify. Spotify won't let
+              apps read its own playlists by name, so tell us what this one is and plays
+              from it get archived from now on.
+            </p>
+            <ul id="context-list"></ul>
+          </div>
+
+          <div id="discovery-empty" hidden>
+            <p>
+              Nothing archived this month yet. Play something from Discover Weekly and
+              it will show up here once you've heard most of it.
+            </p>
+          </div>
+          <ul id="discovery-tracks"></ul>
+
+          <footer>
+            <details>
+              <summary>Sources &amp; past months</summary>
+              <ul id="discovery-sources"></ul>
+              <form id="source-form">
+                <fieldset role="group">
+                  <input
+                    type="text"
+                    id="source-input"
+                    placeholder="Paste a Discover Weekly link"
+                    aria-label="Playlist link"
+                  />
+                  <input
+                    type="text"
+                    id="source-label"
+                    placeholder="Label"
+                    aria-label="Label"
+                    value="Discover Weekly"
+                  />
+                  <button type="submit">Add</button>
+                </fieldset>
+              </form>
+              <ul id="discovery-months"></ul>
+            </details>
+          </footer>
+        </article>
+
+        <article>
+          <header>
+            <strong>Favourites</strong>
+            <button id="remove-selected" class="secondary outline" disabled>
+              Remove selected
+            </button>
+          </header>
+          <div class="scroll-x">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col"><input type="checkbox" id="select-all" aria-label="Select all" /></th>
+                  <th scope="col">Track</th>
+                  <th scope="col">Artist</th>
+                  <th scope="col">Plays</th>
+                  <th scope="col">In playlist</th>
+                </tr>
+              </thead>
+              <tbody id="favorites"></tbody>
+            </table>
+          </div>
+          <footer id="favorites-empty" hidden>
+            <small>Nothing has crossed the threshold yet. Keep listening.</small>
+          </footer>
+        </article>
+
+        <article>
+          <header><strong>Settings</strong></header>
+          <form id="settings-form">
+            <div class="grid">
+              <label>
+                Plays to favourite
+                <input type="number" name="favorite_threshold" min="1" max="100" />
+                <small>How many plays before a song is added.</small>
+              </label>
+              <label>
+                Check every (seconds)
+                <input type="number" name="poll_interval" min="10" max="300" />
+                <small>Slows down automatically while nothing is playing.</small>
+              </label>
+            </div>
+
+            <label>
+              Playlist name
+              <input type="text" name="playlist_name" maxlength="100" />
+            </label>
+
+            <label>
+              Discovery completion
+              <input
+                type="range"
+                name="min_completion_ratio"
+                min="0.5"
+                max="1"
+                step="0.05"
+              />
+              <small>
+                How much of a track you must hear before it's archived as a discovery.
+                <strong>Favourite counts ignore this</strong> &mdash; Spotify decides what
+                counts as a play (roughly 30 seconds) and never tells us how far you got.
+              </small>
+            </label>
+
+            <fieldset>
+              <label>
+                <input type="checkbox" name="auto_add_enabled" role="switch" />
+                Add favourites to the playlist automatically
+              </label>
+              <label>
+                <input type="checkbox" name="discovery_enabled" role="switch" />
+                Archive discoveries to a monthly playlist
+              </label>
+              <label>
+                <input type="checkbox" name="playlist_public" role="switch" />
+                Make new playlists public
+              </label>
+            </fieldset>
+
+            <button type="submit">Save settings</button>
+          </form>
+          <footer>
+            <details>
+              <summary>Disconnect</summary>
+              <p>
+                <small>
+                  Removes your tokens, play counts and archive from this server. Playlists
+                  already in your Spotify account are left alone.
+                </small>
+              </p>
+              <button id="disconnect" class="secondary">Disconnect and erase my data</button>
+            </details>
+          </footer>
+        </article>
+      </div>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>

@@ -3,11 +3,13 @@ __pycache__/
 .env
 .env.local
 .git/
+.github/
 .vscode/
+.pytest_cache/
 data/
-ui/
-Winamp3_Classified_v5.5/
-**/node_modules/
+mds/
+scripts/
+tests/
 *.db
 *.sqlite
 *.sqlite3
