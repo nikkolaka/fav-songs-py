@@ -1,19 +1,19 @@
 services:
-  favsongs:
+  listen:
     build: .
     image: favsongs:local
     environment:
       CLIENT_ID: ${CLIENT_ID}
       CLIENT_SECRET: ${CLIENT_SECRET}
       REDIRECT_URI: ${REDIRECT_URI}
-      SPOTIFY_SCOPE: ${SPOTIFY_SCOPE:-user-read-playback-state,user-read-currently-playing,playlist-modify-public,playlist-modify-private}
-      DEFAULT_PLAYLIST_NAME: ${DEFAULT_PLAYLIST_NAME:-Favourite Songs - Whatsit}
-      FAVSONGS_DATA_DIR: /app/data
+      SESSION_SECRET: ${SESSION_SECRET}
+      COOKIE_SECURE: ${COOKIE_SECURE:-0}
+      DEFAULT_PLAYLIST_NAME: ${DEFAULT_PLAYLIST_NAME:-Favourite Songs}
       FAVSONGS_DB_PATH: /app/data/favsongs.db
     ports:
       - ${APP_PORT:-8090}:8000
     volumes:
-      - favsongs_data:/app/data
+      - ./data:/app/data
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5).read()"]
@@ -21,7 +21,3 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
-
-volumes:
-  favsongs_data:
-    name: favsongs_data

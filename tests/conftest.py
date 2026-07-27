@@ -1,0 +1,147 @@
+"""A fake Spotify client, so the tracking invariants can be tested without credentials."""
+
+import os
+import sys
+from datetime import datetime, timedelta, timezone
+from typing import Any, Optional
+
+import pytest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from app.db import Database  # noqa: E402
+from app.spotify import SpotifyService  # noqa: E402
+from app.tracker import UserTracker  # noqa: E402
+
+FERNET_KEY = b"cGxhY2Vob2xkZXJfa2V5X2Zvcl90ZXN0c19vbmx5ISE="
+
+
+def iso(moment: datetime) -> str:
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+def track(track_id: str, name: str = "Song", artist: str = "Artist", duration_ms: int = 200_000):
+    return {
+        "id": track_id,
+        "name": name,
+        "duration_ms": duration_ms,
+        "artists": [{"name": artist}],
+    }
+
+
+def play(track_id: str, at: datetime, context_playlist: Optional[str] = None, **kwargs):
+    return {
+        "track": track(track_id, **kwargs),
+        "played_at": iso(at),
+        "context": {"uri": f"spotify:playlist:{context_playlist}"} if context_playlist else None,
+    }
+
+
+class FakeSpotify:
+    """Implements only the handful of methods this app calls, with the post-Feb-2026 names."""
+
+    def __init__(self) -> None:
+        self.history: list[dict[str, Any]] = []
+        self.playlists: dict[str, dict[str, Any]] = {}
+        self.playback: Optional[dict[str, Any]] = None
+        self.calls: list[str] = []
+        self._next_id = 0
+
+    # --- history
+
+    def current_user_recently_played(self, limit=50, after=None, before=None):
+        self.calls.append("recently_played")
+        items = self.history
+        if after is not None:
+            cutoff = datetime.fromtimestamp(after / 1000, tz=timezone.utc)
+            items = [
+                item
+                for item in items
+                if datetime.fromisoformat(item["played_at"].replace("Z", "+00:00")) > cutoff
+            ]
+        items = sorted(items, key=lambda i: i["played_at"], reverse=True)[:limit]
+        return {"items": items, "next": None, "cursors": {}}
+
+    # --- playback
+
+    def current_playback(self, market=None, additional_types=None):
+        self.calls.append("current_playback")
+        return self.playback
+
+    # --- playlists
+
+    def current_user_playlists(self, limit=50, offset=0):
+        self.calls.append("current_user_playlists")
+        items = [
+            {"id": pid, "name": data["name"], "public": data["public"]}
+            for pid, data in self.playlists.items()
+        ]
+        return {"items": items, "next": None}
+
+    def current_user_playlist_create(self, name, public=True, collaborative=False, description=""):
+        self.calls.append("create_playlist")
+        self._next_id += 1
+        pid = f"pl{self._next_id}"
+        self.playlists[pid] = {"name": name, "public": public, "tracks": []}
+        return {"id": pid, "name": name}
+
+    def playlist_items(self, playlist_id, fields=None, limit=50, offset=0, market=None,
+                       additional_types=("track", "episode")):
+        self.calls.append("playlist_items")
+        data = self.playlists[playlist_id]
+        return {
+            "items": [{"track": track(tid)} for tid in data["tracks"]],
+            "next": None,
+        }
+
+    def playlist_add_items(self, playlist_id, items, position=None):
+        self.calls.append("playlist_add_items")
+        data = self.playlists[playlist_id]
+        ids = [i.split(":")[-1] for i in items]
+        data["tracks"] = (ids + data["tracks"]) if position == 0 else (data["tracks"] + ids)
+        return {"snapshot_id": "x"}
+
+    def playlist_remove_all_occurrences_of_items(self, playlist_id, items, snapshot_id=None):
+        self.calls.append("playlist_remove")
+        ids = {i.split(":")[-1] for i in items}
+        data = self.playlists[playlist_id]
+        data["tracks"] = [tid for tid in data["tracks"] if tid not in ids]
+        return {"snapshot_id": "x"}
+
+    def next(self, result):
+        return None
+
+
+class FakeService(SpotifyService):
+    def __init__(self, fake: FakeSpotify) -> None:  # noqa: D107 -- deliberately no super()
+        self.fake = fake
+
+    def client(self, user_id: int):
+        return self.fake
+
+
+@pytest.fixture
+def db(tmp_path) -> Database:
+    database = Database(str(tmp_path / "test.db"), FERNET_KEY, "Favourite Songs")
+    yield database
+    database.close()
+
+
+@pytest.fixture
+def user_id(db: Database) -> int:
+    return db.upsert_user("tester", "Tester")
+
+
+@pytest.fixture
+def spotify() -> FakeSpotify:
+    return FakeSpotify()
+
+
+@pytest.fixture
+def tracker(db: Database, user_id: int, spotify: FakeSpotify) -> UserTracker:
+    return UserTracker(user_id, db, FakeService(spotify))
+
+
+@pytest.fixture
+def now() -> datetime:
+    return datetime.now(timezone.utc) - timedelta(minutes=30)

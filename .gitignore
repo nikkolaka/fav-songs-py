@@ -1,5 +1,10 @@
 .env
-.env.portainer
+.venv/
 __pycache__/
 *.pyc
+.pytest_cache/
 data/
+*.db
+*.db-wal
+*.db-shm
+scripts/.probe-token-cache
