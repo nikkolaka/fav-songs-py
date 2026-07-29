@@ -1,7 +1,15 @@
 """SQLite persistence. One connection guarded by a lock, as before -- the write volume
-here is a handful of rows per user per minute."""
+here is a handful of rows per user per minute.
 
+`listens` is the one table meant to grow without bound: it is the permanent history and
+is never pruned. Everything that reads it does so through an index -- keyset pagination
+rather than OFFSET, FTS5 rather than LIKE -- so a decade of plays costs the same per
+page as a week of them.
+"""
+
+import logging
 import os
+import re
 import sqlite3
 import time
 from threading import Lock
@@ -9,9 +17,19 @@ from typing import Any, Optional
 
 from cryptography.fernet import Fernet, InvalidToken
 
-PLAYS_RETENTION_DAYS = 30
+log = logging.getLogger(__name__)
+
+HISTORY_PAGE_LIMIT = 200
+
+# Bumped whenever the shape of the data changes. 1 = the recently-played ledger,
+# 2 = measured listens alongside backfilled ones, 3 = measured listens only.
+SCHEMA_VERSION = 3
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS meta (
+    key    TEXT PRIMARY KEY,
+    value  TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS users (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     spotify_user_id  TEXT NOT NULL UNIQUE,
@@ -51,35 +69,43 @@ CREATE TABLE IF NOT EXISTS settings (
     tracker_running       INTEGER NOT NULL DEFAULT 1
 );
 
--- Dedup ledger for the recently-played sweep. played_at is assigned by Spotify and is
--- stable across calls, so this UNIQUE constraint is what makes the sweep idempotent.
-CREATE TABLE IF NOT EXISTS plays (
-    user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    track_id     TEXT    NOT NULL,
-    played_at    INTEGER NOT NULL,
-    name         TEXT    NOT NULL,
-    artist       TEXT    NOT NULL,
-    context_uri  TEXT,
-    UNIQUE (user_id, track_id, played_at)
+-- The permanent listening history. Exactly one thing writes here: the live playback
+-- poll in app/tracker.py. Every row is therefore a measured listen with a real
+-- `completion_ratio`, and there is no second path that could add a play we cannot
+-- judge -- if it isn't in here, it wasn't heard while the app was watching.
+CREATE TABLE IF NOT EXISTS listens (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id            INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    track_id           TEXT    NOT NULL,
+    name               TEXT    NOT NULL,
+    artist             TEXT    NOT NULL,
+    played_at          INTEGER NOT NULL,
+    duration_ms        INTEGER NOT NULL DEFAULT 0,
+    listened_ms        INTEGER NOT NULL DEFAULT 0,
+    completion_ratio   REAL    NOT NULL DEFAULT 0,
+    qualified          INTEGER NOT NULL DEFAULT 0,
+    context_uri        TEXT,
+    is_open            INTEGER NOT NULL DEFAULT 0
 );
 
-CREATE INDEX IF NOT EXISTS idx_plays_user_played
-    ON plays (user_id, played_at DESC);
+-- Every history page is ordered by (played_at DESC, id DESC) and paged by keyset, so
+-- this index alone answers a page without a sort or a scan of everything before it.
+CREATE INDEX IF NOT EXISTS idx_listens_user_time
+    ON listens (user_id, played_at DESC, id DESC);
 
-CREATE TABLE IF NOT EXISTS play_counts (
-    user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    track_id     TEXT    NOT NULL,
-    name         TEXT    NOT NULL,
-    artist       TEXT    NOT NULL,
-    occurrences  INTEGER NOT NULL DEFAULT 0,
-    last_played  INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (user_id, track_id)
-);
+CREATE INDEX IF NOT EXISTS idx_listens_user_qualified_time
+    ON listens (user_id, qualified, played_at DESC, id DESC);
 
+CREATE INDEX IF NOT EXISTS idx_listens_user_track
+    ON listens (user_id, track_id, played_at DESC);
+
+{play_counts}
+
+-- Only the discovery embed sweep is scheduled now; listens have no cursor because
+-- nothing is ever read back from Spotify's history.
 CREATE TABLE IF NOT EXISTS cursors (
-    user_id                INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-    recently_played_after  INTEGER NOT NULL DEFAULT 0,
-    last_source_sweep      INTEGER NOT NULL DEFAULT 0
+    user_id            INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    last_source_sweep  INTEGER NOT NULL DEFAULT 0
 );
 
 -- Playlists whose contents get filed into the monthly discovery archive.
@@ -140,10 +166,70 @@ CREATE TABLE IF NOT EXISTS discovery_playlists (
 );
 """
 
+# Kept separate because a migration recreates this table from scratch: it is a
+# materialised aggregate of `listens`, so rebuilding it is always the correct repair.
+PLAY_COUNTS_DDL = """
+CREATE TABLE IF NOT EXISTS play_counts (
+    user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    track_id        TEXT    NOT NULL,
+    name            TEXT    NOT NULL,
+    artist          TEXT    NOT NULL,
+    qualified_plays INTEGER NOT NULL DEFAULT 0,
+    total_plays     INTEGER NOT NULL DEFAULT 0,
+    last_played     INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, track_id)
+);
+"""
+
+SCHEMA = SCHEMA.format(play_counts=PLAY_COUNTS_DDL.strip())
+
+# Full-text search over the history, as an external-content table: the index stores the
+# terms, the rows stay in `listens`, and the triggers keep the two in step. `prefix`
+# makes "rad" match "Radiohead" without a leading-wildcard scan.
+FTS_SCHEMA = """
+CREATE VIRTUAL TABLE IF NOT EXISTS listens_fts USING fts5(
+    name,
+    artist,
+    content='listens',
+    content_rowid='id',
+    tokenize="unicode61 remove_diacritics 2",
+    prefix='2 3 4'
+);
+
+CREATE TRIGGER IF NOT EXISTS listens_fts_insert AFTER INSERT ON listens BEGIN
+    INSERT INTO listens_fts (rowid, name, artist) VALUES (new.id, new.name, new.artist);
+END;
+
+CREATE TRIGGER IF NOT EXISTS listens_fts_delete AFTER DELETE ON listens BEGIN
+    INSERT INTO listens_fts (listens_fts, rowid, name, artist)
+    VALUES ('delete', old.id, old.name, old.artist);
+END;
+
+-- Open rows are rewritten on every poll; restricting the trigger to the indexed columns
+-- keeps that from churning the FTS index once per tick.
+CREATE TRIGGER IF NOT EXISTS listens_fts_update AFTER UPDATE OF name, artist ON listens BEGIN
+    INSERT INTO listens_fts (listens_fts, rowid, name, artist)
+    VALUES ('delete', old.id, old.name, old.artist);
+    INSERT INTO listens_fts (rowid, name, artist) VALUES (new.id, new.name, new.artist);
+END;
+"""
+
+# FTS5 treats these as syntax; a search box should treat them as nothing.
+FTS_STRIP_RE = re.compile(r'["*(){}\[\]:^~-]+')
+
+
+def fts_query(text: str) -> str:
+    """Turn what someone typed into an FTS5 prefix query, e.g. `rad ok` -> `"rad"* "ok"*`."""
+    tokens = [token for token in FTS_STRIP_RE.sub(" ", text).split() if token]
+    return " ".join(f'"{token}"*' for token in tokens)
+
+
+# `poll_interval` is deliberately absent: the polling rate is what makes the measurement
+# accurate, so it is fixed in app/tracker.py rather than being anyone's to loosen. The
+# column stays in the table so an older build could still read the database.
 SETTINGS_COLUMNS = (
     "favorite_threshold",
     "min_completion_ratio",
-    "poll_interval",
     "playlist_name",
     "playlist_public",
     "auto_add_enabled",
@@ -177,14 +263,49 @@ class Database:
         self.default_playlist_name = default_playlist_name
         with self.lock:
             self.conn.executescript(SCHEMA)
+            self.fts = self._enable_fts()
             self._migrate()
             self.conn.commit()
 
-    def _migrate(self) -> None:
-        """Add columns introduced after a database was first created.
+    def _enable_fts(self) -> bool:
+        """Build the search index, reporting whether this SQLite has FTS5 at all.
 
-        CREATE TABLE IF NOT EXISTS won't alter an existing table, so a deployment that
-        already has data needs these applied explicitly.
+        Debian's and Alpine's builds both ship it, but a stray interpreter without it
+        should degrade to LIKE rather than refuse to start.
+        """
+        try:
+            self.conn.executescript(FTS_SCHEMA)
+            return True
+        except sqlite3.OperationalError as exc:
+            log.warning("FTS5 unavailable (%s); history search falls back to LIKE", exc)
+            return False
+
+    def _columns(self, table: str) -> set[str]:
+        return {row["name"] for row in self.conn.execute(f"PRAGMA table_info({table})")}
+
+    def _table_exists(self, table: str) -> bool:
+        row = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+        ).fetchone()
+        return row is not None
+
+    def _detect_version(self) -> int:
+        """Which schema an existing database is on, for one that predates `meta`."""
+        row = self.conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+        if row:
+            return int(row["value"])
+        if self._table_exists("plays"):
+            return 1  # the recently-played ledger
+        if "source" in self._columns("listens"):
+            return 2  # measured listens, with backfilled ones alongside
+        # No marker and no older shape: either brand new, or already current.
+        return SCHEMA_VERSION if self._columns("listens") else 0
+
+    def _migrate(self) -> None:
+        """Bring a database created by an earlier version up to the current schema.
+
+        Each step is written to be safe to re-run: a crash part-way through leaves a
+        database the next start can finish migrating rather than one that needs a human.
         """
         additions = (
             ("discovery_sources", "degraded", "TEXT"),
@@ -192,11 +313,66 @@ class Database:
             ("cursors", "last_source_sweep", "INTEGER NOT NULL DEFAULT 0"),
         )
         for table, column, ddl in additions:
-            existing = {
-                row["name"] for row in self.conn.execute(f"PRAGMA table_info({table})")
-            }
-            if column not in existing:
+            if column not in self._columns(table):
                 self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+        version = self._detect_version()
+
+        if version == 1:
+            # `plays` held what Spotify's history reported: that a track played, with no
+            # measure of how much was heard. Nothing here can be judged against the
+            # listening threshold, and the history now has a single source, so the
+            # ledger is dropped rather than imported.
+            self.conn.execute("DROP TABLE IF EXISTS plays")
+            log.info("Dropped the recently-played ledger; history is measured listens only")
+
+        if version == 2:
+            # Same reasoning, applied to rows an earlier build backfilled.
+            self.conn.execute("DELETE FROM listens WHERE source <> 'live'")
+            for column in ("source", "history_played_at"):
+                if column in self._columns("listens"):
+                    self.conn.execute(f"ALTER TABLE listens DROP COLUMN {column}")
+            self.conn.execute("DROP INDEX IF EXISTS idx_listens_history_played")
+
+        if 0 < version < SCHEMA_VERSION:
+            self._rebuild_play_counts()
+            self.conn.execute("UPDATE listens SET completion_ratio = 0 WHERE completion_ratio IS NULL")
+
+        # `recently_played_after` tracked how far the sweep had read. There is no sweep.
+        if "recently_played_after" in self._columns("cursors"):
+            try:
+                self.conn.execute("ALTER TABLE cursors DROP COLUMN recently_played_after")
+            except sqlite3.OperationalError as exc:  # pragma: no cover - old SQLite
+                log.debug("Left recently_played_after in place: %s", exc)
+
+        self.conn.execute(
+            "INSERT INTO meta (key, value) VALUES ('schema_version', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (str(SCHEMA_VERSION),),
+        )
+
+    def _rebuild_play_counts(self) -> None:
+        """Recompute the per-track tally from the history it summarises.
+
+        The counter and the history have to tell the same story -- a tally inherited
+        from a schema that counted different things would disagree with every row a user
+        can actually see.
+        """
+        # Dropped rather than emptied: an older schema had different columns here.
+        self.conn.execute("DROP TABLE IF EXISTS play_counts")
+        self.conn.executescript(PLAY_COUNTS_DDL)
+        self.conn.execute(
+            """
+            INSERT INTO play_counts
+                (user_id, track_id, name, artist, qualified_plays, total_plays, last_played)
+            SELECT user_id, track_id, name, artist,
+                   SUM(qualified), COUNT(*), MAX(played_at)
+              FROM listens
+             WHERE is_open = 0
+             GROUP BY user_id, track_id
+            """
+        )
+        log.info("Rebuilt play counts from the listen history")
 
     def close(self) -> None:
         with self.lock:
@@ -227,7 +403,7 @@ class Database:
                 (user_id, self.default_playlist_name),
             )
             self.conn.execute(
-                "INSERT INTO cursors (user_id, recently_played_after) VALUES (?, 0)",
+                "INSERT INTO cursors (user_id, last_source_sweep) VALUES (?, 0)",
                 (user_id,),
             )
             self.conn.commit()
@@ -399,92 +575,267 @@ class Database:
                 self.conn.commit()
         return self.settings(user_id)
 
-    # ----------------------------------------------------------------- plays
+    # --------------------------------------------------------------- listens
 
-    def record_play(
+    def _bump_counts(
         self,
         user_id: int,
         track_id: str,
         name: str,
         artist: str,
         played_at: int,
-        context_uri: Optional[str],
-    ) -> Optional[int]:
-        """Insert one play. Returns the new occurrence count, or None if already seen.
+        qualified: bool,
+    ) -> int:
+        """Fold one listen into the per-track tally. Caller holds the lock.
 
-        The UNIQUE(user_id, track_id, played_at) constraint is what makes the sweep safe
-        to re-run over overlapping windows.
+        `play_counts` is a materialised aggregate of `listens`. It could be a GROUP BY,
+        but the browser polls the state endpoint every few seconds and the history is
+        the one table designed to grow forever -- so the tally is kept, not recomputed.
         """
+        self.conn.execute(
+            """
+            INSERT INTO play_counts
+                (user_id, track_id, name, artist, qualified_plays, total_plays, last_played)
+            VALUES (?, ?, ?, ?, ?, 1, ?)
+            ON CONFLICT(user_id, track_id) DO UPDATE SET
+                name            = excluded.name,
+                artist          = excluded.artist,
+                qualified_plays = play_counts.qualified_plays + excluded.qualified_plays,
+                total_plays     = play_counts.total_plays + 1,
+                last_played     = MAX(play_counts.last_played, excluded.last_played)
+            """,
+            (user_id, track_id, name, artist, 1 if qualified else 0, played_at),
+        )
+        row = self.conn.execute(
+            "SELECT qualified_plays FROM play_counts WHERE user_id = ? AND track_id = ?",
+            (user_id, track_id),
+        ).fetchone()
+        return int(row["qualified_plays"])
+
+    def open_listen(
+        self,
+        user_id: int,
+        track_id: str,
+        name: str,
+        artist: str,
+        played_at: int,
+        duration_ms: int,
+        context_uri: Optional[str],
+    ) -> int:
+        """Start a row for a playback in progress, so a restart doesn't lose it."""
         with self.lock:
             cursor = self.conn.execute(
                 """
-                INSERT OR IGNORE INTO plays
-                    (user_id, track_id, played_at, name, artist, context_uri)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO listens
+                    (user_id, track_id, name, artist, played_at, duration_ms, listened_ms,
+                     completion_ratio, qualified, context_uri, is_open)
+                VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, ?, 1)
                 """,
-                (user_id, track_id, played_at, name, artist, context_uri),
+                (user_id, track_id, name, artist, played_at, duration_ms, context_uri),
             )
-            if cursor.rowcount == 0:
-                self.conn.commit()
-                return None
-
-            self.conn.execute(
-                """
-                INSERT INTO play_counts (user_id, track_id, name, artist, occurrences, last_played)
-                VALUES (?, ?, ?, ?, 1, ?)
-                ON CONFLICT(user_id, track_id) DO UPDATE SET
-                    name        = excluded.name,
-                    artist      = excluded.artist,
-                    occurrences = play_counts.occurrences + 1,
-                    last_played = MAX(play_counts.last_played, excluded.last_played)
-                """,
-                (user_id, track_id, name, artist, played_at),
-            )
-            row = self.conn.execute(
-                "SELECT occurrences FROM play_counts WHERE user_id = ? AND track_id = ?",
-                (user_id, track_id),
-            ).fetchone()
             self.conn.commit()
-        return int(row["occurrences"])
+        return int(cursor.lastrowid)
 
-    def prune_plays(self) -> None:
-        cutoff = now_millis() - PLAYS_RETENTION_DAYS * 86_400_000
-        with self.lock:
-            self.conn.execute("DELETE FROM plays WHERE played_at < ?", (cutoff,))
-            self.conn.commit()
-
-    def cursor_after(self, user_id: int) -> int:
-        with self.lock:
-            row = self.conn.execute(
-                "SELECT recently_played_after FROM cursors WHERE user_id = ?", (user_id,)
-            ).fetchone()
-        return int(row["recently_played_after"]) if row else 0
-
-    def set_cursor_after(self, user_id: int, value: int) -> None:
+    def update_open_listen(
+        self, row_id: int, listened_ms: int, completion_ratio: float, duration_ms: int
+    ) -> None:
         with self.lock:
             self.conn.execute(
                 """
-                INSERT INTO cursors (user_id, recently_played_after) VALUES (?, ?)
-                ON CONFLICT(user_id) DO UPDATE SET
-                    recently_played_after = MAX(cursors.recently_played_after, excluded.recently_played_after)
+                UPDATE listens
+                   SET listened_ms = ?, completion_ratio = ?, duration_ms = ?
+                 WHERE id = ? AND is_open = 1
                 """,
-                (user_id, value),
+                (listened_ms, completion_ratio, duration_ms, row_id),
             )
             self.conn.commit()
 
-    def count_plays_since(self, user_id: int, since_ms: int) -> int:
+    def close_listen(
+        self,
+        row_id: int,
+        user_id: int,
+        track_id: str,
+        name: str,
+        artist: str,
+        played_at: int,
+        duration_ms: int,
+        listened_ms: int,
+        completion_ratio: float,
+        qualified: bool,
+    ) -> int:
+        """Finish a measured listen and return the track's qualified-play count.
+
+        Both writes happen under one lock and one commit, so a listen can never be
+        recorded without its tally moving, or the other way round.
+        """
+        with self.lock:
+            self.conn.execute(
+                """
+                UPDATE listens
+                   SET name = ?, artist = ?, played_at = ?, duration_ms = ?, listened_ms = ?,
+                       completion_ratio = ?, qualified = ?, is_open = 0
+                 WHERE id = ?
+                """,
+                (
+                    name,
+                    artist,
+                    played_at,
+                    duration_ms,
+                    listened_ms,
+                    completion_ratio,
+                    1 if qualified else 0,
+                    row_id,
+                ),
+            )
+            count = self._bump_counts(user_id, track_id, name, artist, played_at, qualified)
+            self.conn.commit()
+        return count
+
+    def close_orphaned_listens(self) -> None:
+        """Close rows left open by a process that stopped mid-track.
+
+        What was mirrored to the row before the lights went out is a real measurement of
+        audio heard -- a floor, not a guess, since the rest simply went unobserved. So a
+        listen that had already cleared the threshold still counts; one that hadn't is
+        recorded at what it reached.
+        """
+        with self.lock:
+            rows = self.conn.execute(
+                """
+                SELECT l.id, l.user_id, l.track_id, l.name, l.artist, l.played_at,
+                       l.completion_ratio, s.min_completion_ratio AS threshold
+                  FROM listens l
+                  JOIN settings s ON s.user_id = l.user_id
+                 WHERE l.is_open = 1
+                """
+            ).fetchall()
+            for row in rows:
+                qualified = float(row["completion_ratio"] or 0) >= float(row["threshold"])
+                self.conn.execute(
+                    "UPDATE listens SET is_open = 0, qualified = ? WHERE id = ?",
+                    (1 if qualified else 0, row["id"]),
+                )
+                self._bump_counts(
+                    int(row["user_id"]),
+                    str(row["track_id"]),
+                    str(row["name"]),
+                    str(row["artist"]),
+                    int(row["played_at"]),
+                    qualified=qualified,
+                )
+            self.conn.commit()
+        if rows:
+            log.info("Closed %s listen(s) interrupted by a restart", len(rows))
+
+    # --------------------------------------------------------------- history
+
+    def history(
+        self,
+        user_id: int,
+        *,
+        query: Optional[str] = None,
+        start: Optional[int] = None,
+        end: Optional[int] = None,
+        qualified: Optional[bool] = None,
+        cursor: Optional[tuple[int, int]] = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """One page of listening history, newest first.
+
+        Paged by keyset rather than OFFSET: the cursor is the last row's
+        (played_at, id), so page 500 costs exactly what page 1 does instead of walking
+        everything above it.
+        """
+        limit = max(1, min(int(limit), HISTORY_PAGE_LIMIT))
+        joins = ""
+        where = ["l.user_id = ?"]
+        params: list[Any] = [user_id]
+
+        if query and query.strip():
+            if self.fts:
+                match = fts_query(query)
+                if match:
+                    # An FTS5 MATCH has to name the table, not an alias.
+                    joins = "JOIN listens_fts ON listens_fts.rowid = l.id"
+                    where.append("listens_fts MATCH ?")
+                    params.append(match)
+            else:
+                where.append("(l.name LIKE ? OR l.artist LIKE ?)")
+                params += [f"%{query.strip()}%"] * 2
+        if start is not None:
+            where.append("l.played_at >= ?")
+            params.append(int(start))
+        if end is not None:
+            where.append("l.played_at <= ?")
+            params.append(int(end))
+        if qualified is not None:
+            where.append("l.qualified = ?")
+            params.append(1 if qualified else 0)
+        if cursor is not None:
+            where.append("(l.played_at < ? OR (l.played_at = ? AND l.id < ?))")
+            params += [cursor[0], cursor[0], cursor[1]]
+
+        sql = f"""
+            SELECT l.id, l.track_id, l.name, l.artist, l.played_at, l.duration_ms,
+                   l.listened_ms, l.completion_ratio, l.qualified, l.is_open
+              FROM listens l {joins}
+             WHERE {' AND '.join(where)}
+             ORDER BY l.played_at DESC, l.id DESC
+             LIMIT ?
+        """
+        with self.lock:
+            rows = self.conn.execute(sql, (*params, limit + 1)).fetchall()
+
+        items = [dict(row) for row in rows[:limit]]
+        for item in items:
+            item["qualified"] = bool(item["qualified"])
+            item["is_open"] = bool(item["is_open"])
+
+        next_cursor = None
+        if len(rows) > limit and items:
+            last = items[-1]
+            next_cursor = f"{last['played_at']}_{last['id']}"
+        return {"items": items, "next_cursor": next_cursor}
+
+    def history_summary(self, user_id: int) -> dict[str, Any]:
         with self.lock:
             row = self.conn.execute(
-                "SELECT COUNT(*) AS n FROM plays WHERE user_id = ? AND played_at >= ?",
+                """
+                SELECT COUNT(*) AS listens,
+                       COALESCE(SUM(qualified), 0) AS qualified,
+                       MIN(played_at) AS first_played,
+                       MAX(played_at) AS last_played
+                  FROM listens WHERE user_id = ?
+                """,
+                (user_id,),
+            ).fetchone()
+            tracks = self.conn.execute(
+                "SELECT COUNT(*) AS n FROM play_counts WHERE user_id = ?", (user_id,)
+            ).fetchone()
+        return {
+            "listens": int(row["listens"]),
+            "qualified": int(row["qualified"]),
+            "tracks": int(tracks["n"]),
+            "first_played": row["first_played"],
+            "last_played": row["last_played"],
+        }
+
+    def count_listens_since(self, user_id: int, since_ms: int) -> dict[str, int]:
+        with self.lock:
+            row = self.conn.execute(
+                """
+                SELECT COUNT(*) AS total, COALESCE(SUM(qualified), 0) AS qualified
+                  FROM listens WHERE user_id = ? AND played_at >= ?
+                """,
                 (user_id, since_ms),
             ).fetchone()
-        return int(row["n"])
+        return {"total": int(row["total"]), "qualified": int(row["qualified"])}
 
     def play_counts(self, user_id: int) -> dict[str, dict[str, Any]]:
         with self.lock:
             rows = self.conn.execute(
                 """
-                SELECT track_id, name, artist, occurrences, last_played
+                SELECT track_id, name, artist, qualified_plays, total_plays, last_played
                 FROM play_counts WHERE user_id = ?
                 """,
                 (user_id,),
@@ -495,10 +846,10 @@ class Database:
         with self.lock:
             row = self.conn.execute(
                 """
-                SELECT track_id, name, artist, occurrences, last_played
+                SELECT track_id, name, artist, qualified_plays, total_plays, last_played
                 FROM play_counts
-                WHERE user_id = ? AND occurrences < ?
-                ORDER BY occurrences DESC, last_played DESC
+                WHERE user_id = ? AND qualified_plays < ?
+                ORDER BY qualified_plays DESC, last_played DESC
                 LIMIT 1
                 """,
                 (user_id, threshold),

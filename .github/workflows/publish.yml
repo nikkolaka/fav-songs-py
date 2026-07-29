@@ -61,3 +61,23 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+  # Runs on the homelab box itself (LXC 100), on a self-hosted runner. That runner only
+  # ever makes outbound connections, so nothing has to be exposed to the internet and no
+  # server credentials go anywhere near GitHub.
+  deploy:
+    needs: publish
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, mediastack]
+    # Never let two pushes swap the container at the same time.
+    concurrency:
+      group: deploy-listen
+      cancel-in-progress: false
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Pull the new image and swap the container
+        run: |
+          chmod +x scripts/deploy.sh
+          ./scripts/deploy.sh

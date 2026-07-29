@@ -13,7 +13,7 @@
       <header>
         <hgroup>
           <h1>listen</h1>
-          <p>Songs you replay become a playlist. Discoveries become a monthly archive.</p>
+          <p>Songs you actually listen to become a playlist. Discoveries become a monthly archive.</p>
         </hgroup>
         <p id="account" hidden>
           <span id="account-name"></span>
@@ -39,6 +39,7 @@
       <div id="app" hidden>
         <p id="banner" hidden></p>
 
+        <!-- ============================================================ now -->
         <article>
           <header>
             <strong>Now playing</strong>
@@ -49,83 +50,19 @@
           </header>
           <div id="now-playing"></div>
           <footer>
-            <div class="grid">
-              <div><small>Plays in 24h</small><br /><strong id="stat-plays">0</strong></div>
+            <div class="grid stats">
+              <div>
+                <small>Counted in 24h</small><br />
+                <strong id="stat-counted">0</strong>
+                <small class="muted" id="stat-total"></small>
+              </div>
               <div><small>Tracks seen</small><br /><strong id="stat-tracks">0</strong></div>
               <div><small>Next up</small><br /><span id="stat-next">&mdash;</span></div>
             </div>
           </footer>
         </article>
 
-        <article>
-          <header>
-            <strong>Discovery</strong>
-            <span>
-              <span class="muted" id="discovery-month"></span>
-              <button id="sweep-now" class="secondary outline">Sweep now</button>
-            </span>
-          </header>
-
-          <div id="context-prompt" hidden>
-            <p>
-              You finished a track from a playlist we can't identify. Spotify won't let
-              apps read its own playlists by name, so tell us what this one is and plays
-              from it get archived from now on.
-            </p>
-            <ul id="context-list"></ul>
-          </div>
-
-          <div id="discovery-empty" hidden>
-            <p>
-              Nothing archived this month yet. Play something from Discover Weekly and
-              it will show up here once you've heard most of it.
-            </p>
-          </div>
-          <ul id="discovery-tracks"></ul>
-
-          <footer>
-            <details id="blocked-details" hidden>
-              <summary>
-                Filtered as AI-generated (<span id="blocked-count">0</span>)
-              </summary>
-              <p>
-                <small class="muted">
-                  Matched by Spotify artist ID against
-                  <a href="https://github.com/CennoxX/spotify-ai-blocker" target="_blank"
-                     rel="noopener noreferrer">CennoxX/spotify-ai-blocker</a>,
-                  refreshed daily. Listed here so you can check nothing real was dropped.
-                </small>
-              </p>
-              <ul id="blocked-tracks"></ul>
-            </details>
-
-            <details>
-              <summary>Sources &amp; past months</summary>
-              <p><small class="muted" id="blocklist-status"></small></p>
-              <ul id="discovery-sources"></ul>
-              <form id="source-form">
-                <fieldset role="group">
-                  <input
-                    type="text"
-                    id="source-input"
-                    placeholder="Paste a Discover Weekly link"
-                    aria-label="Playlist link"
-                  />
-                  <input
-                    type="text"
-                    id="source-label"
-                    placeholder="Label"
-                    aria-label="Label"
-                    value="Discover Weekly"
-                  />
-                  <button type="submit">Add</button>
-                </fieldset>
-              </form>
-              <ul id="discovery-months"></ul>
-            </details>
-          </footer>
-        </article>
-
+        <!-- ===================================================== favourites -->
         <article>
           <header>
             <strong>Favourites</strong>
@@ -137,56 +74,139 @@
             <table>
               <thead>
                 <tr>
-                  <th scope="col"><input type="checkbox" id="select-all" aria-label="Select all" /></th>
-                  <th scope="col">Track</th>
-                  <th scope="col">Artist</th>
-                  <th scope="col">Plays</th>
-                  <th scope="col">In playlist</th>
+                  <th><input type="checkbox" id="select-all" aria-label="Select all" /></th>
+                  <th>Track</th>
+                  <th>Artist</th>
+                  <th>Counted</th>
+                  <th>Played</th>
+                  <th>In playlist</th>
                 </tr>
               </thead>
               <tbody id="favorites"></tbody>
             </table>
           </div>
-          <footer id="favorites-empty" hidden>
-            <small>Nothing has crossed the threshold yet. Keep listening.</small>
+          <footer>
+            <small class="muted" id="favorites-empty" hidden>
+              Nothing has crossed the threshold yet. Keep listening.
+            </small>
+            <small class="muted">
+              <strong>Counted</strong> is plays where you heard enough of the track;
+              <strong>played</strong> is every time it started. Only counted plays
+              move a song towards the playlist. Everything is measured live, every
+              five seconds &mdash; anything played while this app was offline isn't
+              recorded at all.
+            </small>
           </footer>
         </article>
 
-        <article>
-          <header><strong>Settings</strong></header>
+        <!-- ======================================================= history -->
+        <details id="history-section">
+          <summary>History <span class="muted" id="history-summary"></span></summary>
+          <input
+            type="search"
+            id="history-q"
+            placeholder="Search by track or artist"
+            aria-label="Search history"
+            autocomplete="off"
+          />
+          <p id="history-empty" class="muted" hidden>Nothing matches.</p>
+          <div id="history-list"></div>
+          <footer>
+            <button id="history-more" class="secondary" hidden>Load more</button>
+          </footer>
+        </details>
+
+        <!-- ===================================================== discovery -->
+        <details id="discovery-section">
+          <summary><span id="discovery-month">Discovery</span></summary>
+
+          <button id="sweep-now" class="secondary outline" style="margin-bottom:1rem">Sweep now</button>
+
+          <div id="context-prompt" hidden>
+            <p>
+              You listened to a track from a playlist we can't identify. Spotify won't let
+              apps read its own playlists by name, so tell us what this one is and plays
+              from it get archived from now on.
+            </p>
+            <ul id="context-list"></ul>
+          </div>
+
+          <div id="discovery-empty" hidden>
+            <p>Nothing archived this month yet. Play something from Discover Weekly and
+            it will show up here once you've heard most of it.</p>
+          </div>
+          <ul id="discovery-tracks"></ul>
+
+          <details id="blocked-details" hidden>
+            <summary>
+              Filtered as AI-generated (<span id="blocked-count">0</span>)
+            </summary>
+            <p>
+              <small class="muted">
+                Matched by Spotify artist ID against
+                <a href="https://github.com/CennoxX/spotify-ai-blocker" target="_blank"
+                   rel="noopener noreferrer">CennoxX/spotify-ai-blocker</a>,
+                refreshed daily. Listed here so you can check nothing real was dropped.
+              </small>
+            </p>
+            <ul id="blocked-tracks"></ul>
+          </details>
+
+          <details>
+            <summary>Sources &amp; past months</summary>
+            <p><small class="muted" id="blocklist-status"></small></p>
+            <ul id="discovery-sources"></ul>
+            <form id="source-form">
+              <fieldset role="group">
+                <input
+                  type="text"
+                  id="source-input"
+                  placeholder="Paste a Discover Weekly link"
+                  aria-label="Playlist link"
+                />
+                <input
+                  type="text"
+                  id="source-label"
+                  placeholder="Label"
+                  aria-label="Label"
+                  value="Discover Weekly"
+                />
+                <button type="submit">Add</button>
+              </fieldset>
+            </form>
+            <ul id="discovery-months"></ul>
+          </details>
+        </details>
+
+        <!-- ====================================================== settings -->
+        <details id="settings-section">
+          <summary>Settings</summary>
           <form id="settings-form">
-            <div class="grid">
-              <label>
-                Plays to favourite
-                <input type="number" name="favorite_threshold" min="1" max="100" />
-                <small>How many plays before a song is added.</small>
-              </label>
-              <label>
-                Check every (seconds)
-                <input type="number" name="poll_interval" min="10" max="300" />
-                <small>Slows down automatically while nothing is playing.</small>
-              </label>
-            </div>
-
             <label>
-              Playlist name
-              <input type="text" name="playlist_name" maxlength="100" />
-            </label>
-
-            <label>
-              Discovery completion
+              Listening threshold &mdash; <strong id="ratio-value"></strong> of a track
               <input
                 type="range"
                 name="min_completion_ratio"
-                min="0.5"
+                min="0.25"
                 max="1"
                 step="0.05"
               />
               <small>
-                How much of a track you must hear before it's archived as a discovery.
-                <strong>Favourite counts ignore this</strong> &mdash; Spotify decides what
-                counts as a play (roughly 30 seconds) and never tells us how far you got.
+                How much of a track you have to actually hear before that play counts.
+                Skipping through or seeking to the end doesn't count &mdash; what's
+                measured is audio heard, not where the needle got to.
               </small>
+            </label>
+
+            <label>
+              Plays to favourite
+              <input type="number" name="favorite_threshold" min="1" max="100" />
+              <small>How many counted plays before a song is added.</small>
+            </label>
+
+            <label>
+              Playlist name
+              <input type="text" name="playlist_name" maxlength="100" />
             </label>
 
             <fieldset>
@@ -212,19 +232,18 @@
 
             <button type="submit">Save settings</button>
           </form>
-          <footer>
-            <details>
-              <summary>Disconnect</summary>
-              <p>
-                <small>
-                  Removes your tokens, play counts and archive from this server. Playlists
-                  already in your Spotify account are left alone.
-                </small>
-              </p>
-              <button id="disconnect" class="secondary">Disconnect and erase my data</button>
-            </details>
-          </footer>
-        </article>
+
+          <details style="margin-top:1rem">
+            <summary>Disconnect</summary>
+            <p>
+              <small>
+                Removes your tokens, listening history and archive from this server.
+                Playlists already in your Spotify account are left alone.
+              </small>
+            </p>
+            <button id="disconnect" class="secondary">Disconnect and erase my data</button>
+          </details>
+        </details>
       </div>
     </main>
     <script src="/app.js"></script>

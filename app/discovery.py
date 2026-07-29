@@ -272,34 +272,30 @@ class Discovery:
         user_id: int,
         client: spotipy.Spotify,
         settings: dict[str, Any],
-        playback: dict[str, Any],
+        *,
+        track_id: str,
+        name: str,
+        artist: str,
+        context_uri: Optional[str],
+        heard_ratio: float,
     ) -> Optional[dict[str, Any]]:
-        """Archive the currently-playing track if it came from a discovery source.
+        """Archive a track heard from a discovery source, once enough of it was heard.
 
-        The backstop for when the embed read is unavailable, and how unknown playlists
-        get noticed in the first place.
+        `heard_ratio` is the measured one from `app/listens.py`, not raw playback
+        position -- the same number that decides whether a play counts as a favourite,
+        so both features mean the same thing by "listened to it".
+
+        This is the backstop for when the embed read is unavailable, and how unknown
+        playlists get noticed in the first place.
         """
         if not settings.get("discovery_enabled"):
             return None
 
-        source_id = playlist_id_from_context(playback.get("context"))
-        if not source_id:
+        source_id = playlist_id_from_context({"uri": context_uri} if context_uri else None)
+        if not source_id or not track_id:
             return None
-
-        track = playback.get("item") or {}
-        track_id = track.get("id")
-        duration_ms = int(track.get("duration_ms") or 0)
-        progress_ms = int(playback.get("progress_ms") or 0)
-        if not track_id or duration_ms <= 0:
+        if heard_ratio < float(settings["min_completion_ratio"]):
             return None
-        if (progress_ms / duration_ms) < float(settings["min_completion_ratio"]):
-            return None
-
-        artists = track.get("artists") or []
-        name = str(track.get("name") or "Unknown Track")
-        artist = str(
-            (artists[0].get("name") if artists and artists[0] else None) or "Unknown Artist"
-        )
 
         known = {source["playlist_id"] for source in self.db.discovery_sources(user_id)}
         if source_id not in known:

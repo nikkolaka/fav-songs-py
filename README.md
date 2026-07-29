@@ -1,38 +1,72 @@
 # listen
 
-Songs you replay become a playlist. Songs you discover become a monthly archive.
+Songs you actually listen to become a playlist. Songs you discover become a monthly archive.
 
 Runs at `listen.coleopteras.org`. FastAPI + SQLite + vanilla JS on [Pico CSS](https://picocss.com),
 one container, no build step.
 
 ## What it does
 
-- **Favourites.** Counts plays per track. Once a track crosses your threshold it's added to a
-  playlist (created on first use, reused thereafter).
+- **Favourites.** Counts the plays where you heard enough of the track. Once a track crosses
+  your threshold it's added to a playlist (created on first use, reused thereafter).
+- **History.** Every play is kept, forever, with when you played it and how much of it you
+  heard — searchable and filterable.
 - **Discovery archive.** Every track from your Discover Weekly gets filed into that
   month's playlist — `July's Discover`, `August's Discover` — with AI-generated music
   filtered out.
 - **Multiple accounts.** Everyone logs in with their own Spotify account and gets their own
-  counts, settings and playlists.
+  history, settings and playlists.
 
-## How play counting works
+## How listening is measured
 
-Counts come from a cursored sweep of `GET /me/player/recently-played`, not from watching
-playback progress. Spotify keeps the last 50 plays server-side and stamps each with a stable
-`played_at`, which buys two things:
+Spotify's history (`GET /me/player/recently-played`) tells you a track was played and nothing
+else — it decides what counts as a play on its own terms, roughly 30 seconds in, and never
+reports how far through you got. Skipping a track after 30 seconds and loving it all the way
+through look identical there.
 
-- **Nothing is missed.** Plays that happened while this container was down land on the next
-  sweep. A progress-polling loop can only see what it was awake for.
-- **Nothing is counted twice.** `UNIQUE(user_id, track_id, played_at)` makes re-reading an
-  overlapping window a no-op, so the sweep deliberately rewinds a few seconds each time rather
-  than risking a play falling through the gap.
+So completion is measured instead, from `GET /me/player`, the one endpoint that reports
+`progress_ms`. A **session** is one continuous playback of one track: it opens when the track
+first appears in a poll, absorbs each poll that still looks like the same playback, and closes
+when the track changes or playback stops. What it accumulates is *audio heard* — see
+`app/listens.py`:
 
-`GET /me/player` is polled too, but only for the live now-playing panel and for discovery
-capture. It never increments a count, so the two can't double up.
+- **Time, not position.** Each poll credits at most the wall-clock time that actually elapsed,
+  so seeking to the last ten seconds doesn't make a track 97% listened.
+- **The unobserved tail.** With a 30-second interval, the last poll of a three-minute track sits
+  around 2:50, which would cap every complete listen at ~94%. When a session closes we know when
+  the next track started, so the remaining stretch is credited up to the track's own duration and
+  a full play reaches 1.0.
+- **Pauses don't count.** A track paused and abandoned gets no credit for the time it sat there.
 
-One consequence: Spotify decides what counts as a play (roughly 30 seconds in) and never reports
-how far through a track you got, so `min_completion_ratio` **cannot** gate favourite counting.
-It applies to discovery capture, which does see live progress.
+`min_completion_ratio` is the threshold that measurement is compared against, and it now gates
+**both** favourites and the discovery archive — one setting, one meaning of "listened to it".
+
+### What the sweep is still for
+
+The cursored sweep of recently-played still runs, but only to backfill the history with plays the
+poll never saw — the ones from while the container was down. Those are recorded and marked
+**unverified**: they have no measured completion, so they can never promote anything. That is the
+deliberate trade. A play that happened while this app was offline cannot count towards a
+favourite, because there is no honest way to say whether it was heard or skipped.
+
+Rows are reconciled rather than duplicated. A live-measured listen and Spotify's own entry for the
+same play are matched on track and time (Spotify never documents whether `played_at` marks the
+start or the end of a play, so the window covers both), and a partial unique index on
+`(user_id, track_id, history_played_at)` keeps re-reading an overlapping window a no-op.
+
+## The history
+
+`listens` is the one table meant to grow without bound, so nothing reads it with a scan:
+
+- **Keyset pagination.** The cursor is the last row's `(played_at, id)`, not an `OFFSET`, so page
+  500 costs what page 1 costs. `EXPLAIN QUERY PLAN` is asserted in the tests to stay an index
+  seek with no sort.
+- **FTS5 for search.** An external-content index over track and artist with `prefix='2 3 4'`, so
+  `rad` finds Radiohead without a leading-wildcard scan, and `sigur ros` finds `Sigur Rós`.
+  Triggers keep it in step with the table; if a SQLite build lacks FTS5 it degrades to `LIKE`
+  rather than failing to start.
+- **Nothing held client-side.** Filters run on the server, pages are appended, and a superseded
+  keystroke's response is discarded rather than rendered.
 
 ## Why the Discovery archive works the way it does
 
@@ -167,15 +201,24 @@ with everything else holding a handle there.
 |---|---|
 | `app/config.py` | Environment config, scopes, limits |
 | `app/db.py` | SQLite schema and queries; refresh tokens encrypted with Fernet |
+| `app/listens.py` | Session accounting — how much of a track was actually heard |
 | `app/spotify.py` | OAuth, per-user token refresh, 429 backoff |
 | `app/playlists.py` | Find-or-create by name, cached membership |
-| `app/tracker.py` | The sweep, the live poll, one asyncio task per user |
+| `app/tracker.py` | The live poll, the backfill sweep, one asyncio task per user |
 | `app/discovery.py` | Embed read, month playlists, context matching |
 | `app/aiblocklist.py` | Live AI-artist blocklist, cached with fallback |
 | `app/main.py` | Routes and session cookies |
 | `app/web/` | `index.html`, `app.js`, vendored `pico.min.css` |
 | `scripts/probe_api.py` | Endpoint availability check |
-| `tests/` | Sweep idempotency, downtime recovery, discovery capture |
+| `tests/` | Completion measurement, sweep idempotency, history paging, discovery |
+
+## Upgrading from the play-counting version
+
+The schema migrates itself on first start. `plays` (a 30-day dedup ledger) folds into `listens`
+(the permanent history) as `legacy` rows — recorded, unverified, never counted — and
+`play_counts.occurrences` becomes `qualified_plays` with its tally carried over as-is. Nobody's
+progress towards a playlist resets, and nothing already promoted gets removed. From then on only
+measured listens move the counter.
 
 **spotipy must stay at 2.26.0 or newer.** It's the first release targeting the February 2026
 endpoint layout (`/playlists/{id}/items`, `POST /me/playlists`); 2.25.x calls paths Spotify has

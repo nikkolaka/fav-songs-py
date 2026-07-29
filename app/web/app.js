@@ -1,6 +1,8 @@
 "use strict";
 
 const POLL_MS = 5000;
+const SEARCH_DEBOUNCE_MS = 250;
+const HISTORY_PAGE = 50;
 
 const $ = (id) => document.getElementById(id);
 
@@ -11,8 +13,8 @@ const LOGIN_ERRORS = {
   access_denied: "You declined the permissions, so nothing was connected.",
 };
 
-let settingsDirty = false;
 let state = null;
+let settingsRendered = false;
 
 const esc = (value) =>
   String(value ?? "").replace(
@@ -30,6 +32,16 @@ function ago(ms) {
   if (hours < 24) return `${hours}h ago`;
   return `${Math.floor(hours / 24)}d ago`;
 }
+
+const clock = (ms) => {
+  const total = Math.round(ms / 1000);
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+};
+
+const dayLabel = new Intl.DateTimeFormat(undefined, {
+  weekday: "long", day: "numeric", month: "long", year: "numeric",
+});
+const timeLabel = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" });
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -60,27 +72,39 @@ function renderNowPlaying(now) {
   }
 
   const counts = state.favorites.find((f) => f.track_id === now.track_id);
-  const plays = counts ? counts.occurrences : 0;
-  const percent = Math.round((now.completion_ratio || 0) * 100);
+  const played = counts ? counts.qualified_plays : 0;
+  const position = Math.round((now.completion_ratio || 0) * 100);
+  const heard = Math.round((now.heard_ratio || 0) * 100);
+  const needed = Math.round(state.settings.min_completion_ratio * 100);
 
   box.innerHTML = `
     <p class="track-title"><strong>${esc(now.name)}</strong></p>
     <p class="track-artist">${esc(now.artist)}</p>
-    <progress value="${percent}" max="100"></progress>
-    <small class="muted">${percent}% &middot; ${plays} play${plays === 1 ? "" : "s"} counted${
-      now.is_playing ? "" : " &middot; paused"
-    }</small>
+    <progress value="${position}" max="100"></progress>
+    <p class="heard">
+      <span class="${now.counts ? "pico-color-green-500" : "muted"}">
+        ${now.counts ? "&check; counts" : `${needed}% needed to count`}
+      </span>
+      <small class="muted">
+        heard ${clock(now.heard_ms || 0)} of ${clock(now.duration_ms || 0)} (${heard}%)
+        &middot; ${played} counted play${played === 1 ? "" : "s"}${
+          now.is_playing ? "" : " &middot; paused"
+        }
+      </small>
+    </p>
   `;
 }
 
 function renderStats(stats) {
-  $("stat-plays").textContent = stats.plays_24h;
+  const day = stats.last_24h || { total: 0, qualified: 0 };
+  $("stat-counted").textContent = day.qualified;
+  $("stat-total").textContent = ` of ${day.total} played`;
   $("stat-tracks").textContent = stats.tracked_tracks;
 
   const next = stats.next_favorite;
   const threshold = state.settings.favorite_threshold;
   $("stat-next").innerHTML = next
-    ? `<small>${esc(next.name)} &mdash; ${threshold - next.occurrences} to go</small>`
+    ? `<small>${esc(next.name)} &mdash; ${threshold - next.qualified_plays} to go</small>`
     : "<small class='muted'>&mdash;</small>";
 }
 
@@ -95,8 +119,9 @@ function renderFavorites(favorites) {
         <td><input type="checkbox" data-track="${esc(item.track_id)}" aria-label="Select" /></td>
         <td>${esc(item.name)}</td>
         <td class="muted">${esc(item.artist)}</td>
-        <td>${item.occurrences}</td>
-        <td>${item.in_playlist ? "yes" : `<span class="muted">no</span>`}</td>
+        <td>${item.qualified_plays}</td>
+        <td class="muted">${item.total_plays}</td>
+        <td>${item.in_playlist ? "yes" : '<span class="muted">no</span>'}</td>
       </tr>`,
     )
     .join("");
@@ -203,7 +228,8 @@ function renderDiscovery(discovery) {
 }
 
 function renderSettings(settings) {
-  if (settingsDirty) return;
+  if (settingsRendered) return;
+  settingsRendered = true;
   const form = $("settings-form");
   for (const [key, value] of Object.entries(settings)) {
     const field = form.elements[key];
@@ -211,6 +237,12 @@ function renderSettings(settings) {
     if (field.type === "checkbox") field.checked = Boolean(value);
     else field.value = value;
   }
+  renderRatioLabel();
+}
+
+function renderRatioLabel() {
+  const value = Number($("settings-form").elements.min_completion_ratio.value);
+  $("ratio-value").textContent = `${Math.round(value * 100)}%`;
 }
 
 function render(next) {
@@ -234,6 +266,126 @@ function render(next) {
   renderSettings(state.settings);
   updateRemoveButton();
 }
+
+// ---------------------------------------------------------------- history
+
+const hist = { cursor: null, shown: 0, lastDay: null, currentList: null, timer: null };
+
+function historyRow(item) {
+  const when = new Date(item.played_at);
+  const percent = Math.round((item.completion_ratio || 0) * 100);
+
+  let badge;
+  if (item.is_open) {
+    badge = '<small class="badge playing">playing</small>';
+  } else if (item.qualified) {
+    badge = `<small class="badge counted">${percent}%</small>`;
+  } else {
+    badge = `<small class="badge skipped">${percent}%</small>`;
+  }
+
+  return `
+    <li>
+      <small class="when muted">${timeLabel.format(when)}</small>
+      <span class="what">
+        <strong>${esc(item.name)}</strong><br />
+        <small class="muted">${esc(item.artist)}</small>
+      </span>
+      ${badge}
+    </li>`;
+}
+
+function appendHistory(items) {
+  const list = $("history-list");
+  let buffer = "";
+  const flush = () => {
+    if (buffer && hist.currentList) hist.currentList.insertAdjacentHTML("beforeend", buffer);
+    buffer = "";
+  };
+
+  for (const item of items) {
+    const day = dayLabel.format(new Date(item.played_at));
+    if (day !== hist.lastDay) {
+      flush();
+      list.insertAdjacentHTML(
+        "beforeend",
+        `<h4 class="day">${esc(day)}</h4><ul class="plain"></ul>`,
+      );
+      hist.lastDay = day;
+      hist.currentList = list.lastElementChild;
+    }
+    buffer += historyRow(item);
+  }
+  flush();
+  hist.shown += items.length;
+}
+
+async function loadHistory({ reset = false } = {}) {
+  if (reset) {
+    hist.cursor = null;
+    hist.shown = 0;
+    hist.lastDay = null;
+    hist.currentList = null;
+    $("history-list").innerHTML = "";
+  }
+
+  const params = new URLSearchParams();
+  const q = $("history-q").value.trim();
+  if (q) params.set("q", q);
+  params.set("limit", String(HISTORY_PAGE));
+  if (hist.cursor) params.set("cursor", hist.cursor);
+
+  const button = $("history-more");
+  button.setAttribute("aria-busy", "true");
+
+  try {
+    const data = await api(`/api/history?${params}`);
+    appendHistory(data.items);
+    hist.cursor = data.next_cursor;
+
+    $("history-empty").hidden = hist.shown > 0;
+    button.hidden = !data.next_cursor;
+  } catch (error) {
+    notify(error.message);
+  } finally {
+    button.removeAttribute("aria-busy");
+  }
+}
+
+function renderHistorySummary(summary) {
+  if (!summary || !summary.listens) {
+    $("history-summary").textContent = "";
+    return;
+  }
+  const since = new Date(summary.first_played).toLocaleDateString(undefined, {
+    month: "short", year: "numeric",
+  });
+  $("history-summary").textContent =
+    ` &mdash; ${summary.listens.toLocaleString()} plays, ` +
+    `${summary.qualified.toLocaleString()} counted, ${summary.tracks.toLocaleString()} tracks since ${since}`;
+}
+
+async function loadHistorySummary() {
+  try {
+    renderHistorySummary(await api("/api/history/summary"));
+  } catch (_) {}
+}
+
+function scheduleHistoryReload() {
+  clearTimeout(hist.timer);
+  hist.timer = setTimeout(() => loadHistory({ reset: true }), SEARCH_DEBOUNCE_MS);
+}
+
+// History is fetched on demand when the section is opened.
+$("history-section").addEventListener("toggle", () => {
+  if ($("history-section").open && hist.shown === 0 && !hist.cursor) {
+    loadHistory({ reset: true });
+    loadHistorySummary();
+  }
+});
+
+$("history-q").addEventListener("input", scheduleHistoryReload);
+$("history-more").addEventListener("click", () => loadHistory());
 
 // ------------------------------------------------------------------ events
 
@@ -279,7 +431,7 @@ $("logout").addEventListener("click", () =>
 );
 
 $("disconnect").addEventListener("click", () => {
-  if (!confirm("Erase your play counts, archive and tokens from this server?")) return;
+  if (!confirm("Erase your listening history, archive and tokens from this server?")) return;
   act(async () => {
     await api("/api/auth/disconnect", { method: "POST" });
     window.location.reload();
@@ -292,8 +444,8 @@ $("tracker-toggle").addEventListener("change", (event) =>
   ),
 );
 
-$("settings-form").addEventListener("input", () => {
-  settingsDirty = true;
+$("settings-form").addEventListener("input", (event) => {
+  if (event.target.name === "min_completion_ratio") renderRatioLabel();
 });
 
 $("settings-form").addEventListener("submit", (event) => {
@@ -301,7 +453,6 @@ $("settings-form").addEventListener("submit", (event) => {
   const form = event.target;
   const payload = {
     favorite_threshold: Number(form.elements.favorite_threshold.value),
-    poll_interval: Number(form.elements.poll_interval.value),
     min_completion_ratio: Number(form.elements.min_completion_ratio.value),
     playlist_name: form.elements.playlist_name.value.trim(),
     auto_add_enabled: form.elements.auto_add_enabled.checked,
@@ -310,7 +461,6 @@ $("settings-form").addEventListener("submit", (event) => {
   };
   act(async () => {
     await api("/api/settings", { method: "POST", body: JSON.stringify(payload) });
-    settingsDirty = false;
     notify("Settings saved.", false);
   });
 });

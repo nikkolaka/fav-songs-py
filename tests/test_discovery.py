@@ -18,19 +18,19 @@ from app.discovery import (
     read_playlist_embed,
 )
 
-from conftest import track
 
-
-def playing(track_id, context_playlist=None, progress_ratio=0.9, duration_ms=200_000):
-    return {
-        "item": track(track_id, duration_ms=duration_ms),
-        "progress_ms": int(duration_ms * progress_ratio),
-        "is_playing": True,
-        "timestamp": 1_800_000_000_000,
-        "context": {"uri": f"spotify:playlist:{context_playlist}", "type": "playlist"}
-        if context_playlist
-        else None,
-    }
+def capture(tracker, user_id, spotify, settings, track_id, playlist=None, heard_ratio=0.9):
+    """Offer one measured listen to the archive, the way the tracker does."""
+    return tracker.discovery.capture(
+        user_id,
+        spotify,
+        settings,
+        track_id=track_id,
+        name="Song",
+        artist="Artist",
+        context_uri=f"spotify:playlist:{playlist}" if playlist else None,
+        heard_ratio=heard_ratio,
+    )
 
 
 def embed_html(name="Discover Weekly", tracks=(("t1", "Song One", "Band One"),)):
@@ -321,7 +321,7 @@ def test_unknown_context_is_recorded_with_its_resolved_name(
     monkeypatch.setattr(discovery_mod, "playlist_title", lambda pid: "Jazz for Study")
     settings = db.settings(user_id)
 
-    assert tracker.discovery.capture(user_id, spotify, settings, playing("t1", "pl99")) is None
+    assert capture(tracker, user_id, spotify, settings, "t1", "pl99") is None
 
     pending = db.unlabelled_contexts(user_id)
     assert len(pending) == 1
@@ -334,7 +334,7 @@ def test_discover_weekly_registers_itself(tracker, spotify, db, user_id, monkeyp
     monkeypatch.setattr(discovery_mod, "playlist_title", lambda pid: "Discover Weekly")
     settings = db.settings(user_id)
 
-    tracker.discovery.capture(user_id, spotify, settings, playing("t1", "dw123"))
+    capture(tracker, user_id, spotify, settings, "t1", "dw123")
 
     assert [s["playlist_id"] for s in db.discovery_sources(user_id)] == ["dw123"]
     assert db.unlabelled_contexts(user_id) == []
@@ -344,7 +344,7 @@ def test_capture_archives_from_a_known_source(tracker, spotify, db, user_id):
     db.add_discovery_source(user_id, "dw123", "Discover Weekly")
     settings = db.settings(user_id)
 
-    captured = tracker.discovery.capture(user_id, spotify, settings, playing("t1", "dw123"))
+    captured = capture(tracker, user_id, spotify, settings, "t1", "dw123")
 
     assert captured["track_id"] == "t1"
     assert next(iter(spotify.playlists.values()))["tracks"] == ["t1"]
@@ -355,21 +355,17 @@ def test_capture_respects_the_blocklist(tracker, spotify, db, user_id):
     spotify.track_artists = {"bot": ["aiartist-known"]}
     settings = db.settings(user_id)
 
-    assert tracker.discovery.capture(user_id, spotify, settings, playing("bot", "dw123")) is None
+    assert capture(tracker, user_id, spotify, settings, "bot", "dw123") is None
     assert spotify.playlists == {}
     assert len(db.blocked_month(user_id, month_key())) == 1
 
 
 def test_partial_listen_is_not_captured(tracker, spotify, db, user_id):
+    """Same threshold that gates favourites: not heard, not archived."""
     db.add_discovery_source(user_id, "dw123", "Discover Weekly")
     settings = db.settings(user_id)
 
-    assert (
-        tracker.discovery.capture(
-            user_id, spotify, settings, playing("t1", "dw123", progress_ratio=0.3)
-        )
-        is None
-    )
+    assert capture(tracker, user_id, spotify, settings, "t1", "dw123", heard_ratio=0.3) is None
     assert spotify.playlists == {}
 
 
@@ -388,7 +384,7 @@ def test_capture_will_not_duplicate_what_a_sweep_already_archived(
     tracker.sweep_sources(spotify)
 
     settings = db.settings(user_id)
-    assert tracker.discovery.capture(user_id, spotify, settings, playing("t1", "dw123")) is None
+    assert capture(tracker, user_id, spotify, settings, "t1", "dw123") is None
     assert next(iter(spotify.playlists.values()))["tracks"] == ["t1"]
 
 
@@ -396,6 +392,6 @@ def test_discovery_disabled_captures_nothing(tracker, spotify, db, user_id):
     db.add_discovery_source(user_id, "dw123", "Discover Weekly")
     settings = db.update_settings(user_id, {"discovery_enabled": False})
 
-    assert tracker.discovery.capture(user_id, spotify, settings, playing("t1", "dw123")) is None
+    assert capture(tracker, user_id, spotify, settings, "t1", "dw123") is None
     assert tracker.sweep_sources(spotify) == {"archived": 0, "blocked": 0, "errors": []}
     assert spotify.playlists == {}

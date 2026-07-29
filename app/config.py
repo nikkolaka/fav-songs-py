@@ -11,10 +11,10 @@ load_dotenv()
 
 DEFAULT_PLAYLIST_NAME = "Favourite Songs"
 
-# user-read-recently-played backs the play-count sweep; playlist-read-private is what
-# lets us find an existing private favourites playlist instead of creating a second one.
+# No user-read-recently-played: Spotify's own history is never read, because it can't
+# say how much of a track was heard. playlist-read-private is what lets us find an
+# existing private favourites playlist instead of creating a second one.
 SCOPES = (
-    "user-read-recently-played",
     "user-read-playback-state",
     "user-read-currently-playing",
     "playlist-read-private",

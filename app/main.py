@@ -35,7 +35,7 @@ trackers = TrackerManager(database, spotify_service, blocklist)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    database.prune_plays()
+    database.close_orphaned_listens()
     # Don't let a GitHub outage delay startup; the cached copy carries us until the
     # tracker's next sweep refreshes it.
     await asyncio.to_thread(blocklist.refresh)
@@ -83,8 +83,10 @@ def set_session_cookie(response: Any, token: str) -> None:
 
 class SettingsUpdate(BaseModel):
     favorite_threshold: Optional[int] = Field(default=None, ge=1, le=100)
-    min_completion_ratio: Optional[float] = Field(default=None, ge=0.5, le=1.0)
-    poll_interval: Optional[int] = Field(default=None, ge=10, le=300)
+    # Now gates favourites as well as discovery, so it reaches lower than the 0.5 that
+    # made sense when it only decided what got archived. There is no poll_interval here
+    # on purpose: it is the measurement resolution, not a preference.
+    min_completion_ratio: Optional[float] = Field(default=None, ge=0.25, le=1.0)
     playlist_name: Optional[str] = Field(default=None, min_length=1, max_length=100)
     playlist_public: Optional[bool] = None
     auto_add_enabled: Optional[bool] = None
@@ -123,7 +125,7 @@ def build_state(user_id: Optional[int]) -> dict[str, Any]:
 
     rows: dict[str, dict[str, Any]] = {}
     for track_id, row in counts.items():
-        if int(row["occurrences"]) < threshold and track_id not in membership:
+        if int(row["qualified_plays"]) < threshold and track_id not in membership:
             continue
         rows[track_id] = {**row, "in_playlist": track_id in membership}
 
@@ -136,7 +138,8 @@ def build_state(user_id: Optional[int]) -> dict[str, Any]:
             "track_id": track_id,
             "name": entry["name"],
             "artist": entry["artist"],
-            "occurrences": int(counts.get(track_id, {}).get("occurrences", 0)),
+            "qualified_plays": int(counts.get(track_id, {}).get("qualified_plays", 0)),
+            "total_plays": int(counts.get(track_id, {}).get("total_plays", 0)),
             "last_played": int(counts.get(track_id, {}).get("last_played", 0)),
             "in_playlist": True,
         }
@@ -145,7 +148,7 @@ def build_state(user_id: Optional[int]) -> dict[str, Any]:
         rows.values(),
         key=lambda item: (
             0 if item["in_playlist"] else 1,
-            -int(item["occurrences"]),
+            -int(item["qualified_plays"]),
             -int(item["last_played"]),
             str(item["artist"]).lower(),
         ),
@@ -168,7 +171,7 @@ def build_state(user_id: Optional[int]) -> dict[str, Any]:
         "now_playing": tracker.now_playing,
         "settings": settings,
         "stats": {
-            "plays_24h": database.count_plays_since(user_id, now_millis() - 86_400_000),
+            "last_24h": database.count_listens_since(user_id, now_millis() - 86_400_000),
             "tracked_tracks": len(counts),
             "next_favorite": database.next_favorite_candidate(user_id, threshold),
         },
@@ -222,6 +225,49 @@ async def api_state(user_id: Optional[int] = Depends(optional_user_id)) -> dict[
     return build_state(user_id)
 
 
+def parse_cursor(raw: Optional[str]) -> Optional[tuple[int, int]]:
+    """`<played_at>_<id>` from the previous page, or None for the first one."""
+    if not raw:
+        return None
+    played_at, _, row_id = raw.partition("_")
+    try:
+        return int(played_at), int(row_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Malformed page cursor") from None
+
+
+@app.get("/api/history")
+async def api_history(
+    q: Optional[str] = None,
+    start: Optional[int] = None,
+    end: Optional[int] = None,
+    qualified: Optional[bool] = None,
+    cursor: Optional[str] = None,
+    limit: int = 50,
+    user_id: int = Depends(current_user_id),
+) -> dict[str, Any]:
+    """One page of listening history, newest first.
+
+    `start`/`end` are epoch milliseconds -- the browser converts the dates someone picks
+    from its own timezone, so a day means their day rather than UTC's.
+    """
+    return await asyncio.to_thread(
+        database.history,
+        user_id,
+        query=q,
+        start=start,
+        end=end,
+        qualified=qualified,
+        cursor=parse_cursor(cursor),
+        limit=limit,
+    )
+
+
+@app.get("/api/history/summary")
+async def api_history_summary(user_id: int = Depends(current_user_id)) -> dict[str, Any]:
+    return await asyncio.to_thread(database.history_summary, user_id)
+
+
 @app.post("/api/auth/start")
 async def auth_start() -> dict[str, str]:
     state = secrets.token_urlsafe(32)
@@ -254,11 +300,8 @@ async def auth_callback(
         user_id, result["access_token"], result["refresh_token"], result["expires_at"]
     )
 
-    if not known:
-        # Start counting from now rather than replaying the 50 plays already in Spotify's
-        # history, so signing in never triggers a surprise batch of playlist additions.
-        database.set_cursor_after(user_id, now_millis())
-
+    # Nothing is replayed on sign-in: tracking starts from the first thing measured, so
+    # logging in can never trigger a surprise batch of playlist additions.
     token = secrets.token_urlsafe(32)
     database.create_session(token, user_id, now_seconds() + SESSION_TTL_SECONDS)
     await trackers.start(user_id)

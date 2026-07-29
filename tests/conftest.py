@@ -9,6 +9,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from app import tracker as tracker_mod  # noqa: E402
 from app.aiblocklist import AiBlocklist  # noqa: E402
 from app.db import Database  # noqa: E402
 from app.spotify import SpotifyService  # noqa: E402
@@ -36,6 +37,74 @@ def play(track_id: str, at: datetime, context_playlist: Optional[str] = None, **
         "played_at": iso(at),
         "context": {"uri": f"spotify:playlist:{context_playlist}"} if context_playlist else None,
     }
+
+
+def playback(
+    track_id: str,
+    progress_ms: int,
+    is_playing: bool = True,
+    context_playlist: Optional[str] = None,
+    **kwargs,
+):
+    """What `GET /me/player` returns mid-track."""
+    return {
+        "item": track(track_id, **kwargs),
+        "progress_ms": progress_ms,
+        "is_playing": is_playing,
+        "context": {"uri": f"spotify:playlist:{context_playlist}"} if context_playlist else None,
+    }
+
+
+class Clock:
+    """A hand-cranked wall clock, so listening can be simulated poll by poll."""
+
+    def __init__(self, start_ms: int = 1_800_000_000_000) -> None:
+        self.now = start_ms
+
+    def __call__(self) -> int:
+        return self.now
+
+    def advance(self, ms: int) -> int:
+        self.now += ms
+        return self.now
+
+
+class Player:
+    """Drives a tracker through a sequence of polls against a fake clock."""
+
+    def __init__(self, tracker: UserTracker, spotify: "FakeSpotify", clock: Clock) -> None:
+        self.tracker = tracker
+        self.spotify = spotify
+        self.clock = clock
+
+    def poll(self, state: Optional[dict[str, Any]], after_ms: int = 0) -> None:
+        if after_ms:
+            self.clock.advance(after_ms)
+        self.spotify.playback = state
+        self.tracker._live_poll(self.spotify)
+
+    def listen(
+        self,
+        track_id: str,
+        duration_ms: int = 200_000,
+        heard_ms: Optional[int] = None,
+        step_ms: int = 30_000,
+        context_playlist: Optional[str] = None,
+    ) -> None:
+        """Play a track from the start for `heard_ms`, then stop -- closing its session.
+
+        Polls land on the step, not on the moment playback ends, exactly as a real
+        30-second interval would: the last stretch is never directly observed.
+        """
+        heard_ms = duration_ms if heard_ms is None else heard_ms
+        at = 0
+        while at <= heard_ms:
+            self.poll(
+                playback(track_id, at, duration_ms=duration_ms, context_playlist=context_playlist),
+                after_ms=0 if at == 0 else step_ms,
+            )
+            at += step_ms
+        self.poll(None, after_ms=max(0, heard_ms - (at - step_ms)))
 
 
 class FakeSpotify:
@@ -161,6 +230,19 @@ def tracker(
     db: Database, user_id: int, spotify: FakeSpotify, blocklist: AiBlocklist
 ) -> UserTracker:
     return UserTracker(user_id, db, FakeService(spotify), blocklist)
+
+
+@pytest.fixture
+def clock(monkeypatch) -> Clock:
+    """Freeze the tracker's clock so a listen can be played out in simulated time."""
+    instance = Clock()
+    monkeypatch.setattr(tracker_mod, "now_millis", instance)
+    return instance
+
+
+@pytest.fixture
+def player(tracker: UserTracker, spotify: FakeSpotify, clock: Clock) -> Player:
+    return Player(tracker, spotify, clock)
 
 
 @pytest.fixture

@@ -1,49 +1,44 @@
 """Per-user play tracking.
 
-Two independent mechanisms, deliberately kept separate:
+One mechanism writes the listening history, and only one: a poll of `GET /me/player`
+every five seconds, measuring playback as it happens. See `app/listens.py` for how a
+session accumulates into a completion ratio. A listen that clears
+`min_completion_ratio` counts towards the favourites threshold; one that doesn't is
+still recorded, just not counted. Both end up in the history either way.
 
-1. A cursored sweep of `GET /me/player/recently-played` is the *only* source of play
-   counts. Spotify keeps the last 50 plays server-side and stamps each with a stable
-   `played_at`, which gives us both properties the old progress-polling loop lacked:
-   plays that happened while this container was down still land on the next sweep, and
-   `UNIQUE(user_id, track_id, played_at)` makes re-reading an overlapping window a no-op.
+Spotify's own history (`GET /me/player/recently-played`) is deliberately not read. It
+reports that a track played and never how much of it was heard, so anything from there
+would be a second, unmeasurable way for rows to appear -- a play that happened while
+this app was down simply isn't recorded, rather than being recorded as a guess.
 
-2. A poll of `GET /me/player` drives the live now-playing panel and discovery capture.
-   It never increments a play count, so the two cannot double-count each other.
-
-Consequence worth knowing: Spotify logs a track to recently-played on its own terms
-(roughly 30 seconds in) and never reports how far through it got, so
-`min_completion_ratio` cannot gate favourite counting. It applies to discovery capture,
-which does see live progress.
+The poll interval is fixed rather than configurable because it *is* the measurement
+resolution: at five seconds the unobserved stretch at the end of a track is at most five
+seconds, and the completion figure is honest to within that. Letting it be raised would
+quietly make everyone's percentages mean something different.
 """
 
 import asyncio
 import logging
-from datetime import datetime
 from typing import Any, Optional
 
 import spotipy
 
-from . import playlists
+from . import listens, playlists
 from .aiblocklist import AiBlocklist
 from .db import Database, now_millis, now_seconds
 from .discovery import Discovery
+from .listens import Observation, Session
 from .playlists import PlaylistCache
 from .spotify import SpotifyAuthError, SpotifyService, retry_after_seconds
 
 log = logging.getLogger(__name__)
 
-RECENTLY_PLAYED_LIMIT = 50
-
-# Re-read a few seconds behind the cursor. Any overlap is absorbed by the UNIQUE
-# constraint, and it means a play stamped on a boundary can never fall through the gap.
-CURSOR_OVERLAP_MS = 5_000
+# Fixed for every user. Five seconds bounds the measurement error on a track's tail; it
+# is not a preference, and there is no backoff, because a session that goes unobserved
+# for a minute is a session measured a minute wrong.
+POLL_INTERVAL_SECONDS = 5
 
 FAVORITES_DESCRIPTION = "Songs you keep coming back to. Maintained automatically."
-
-# Back off when nothing is happening, so five idle users don't burn quota all day.
-MAX_IDLE_MULTIPLIER = 4
-IDLE_CYCLES_BEFORE_BACKOFF = 5
 
 # Discover Weekly refreshes on Mondays, so six hours catches every edition with room to
 # spare while costing one page fetch per source per sweep.
@@ -51,31 +46,29 @@ SOURCE_SWEEP_INTERVAL_SECONDS = 6 * 3600
 SOURCE_SWEEP_RETRY_SECONDS = 900
 
 
-def parse_played_at(value: str) -> int:
-    """'2026-07-26T12:34:56.789Z' -> epoch milliseconds."""
-    return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() * 1000)
+def format_now_playing(
+    obs: Optional[Observation], session: Optional[Session], threshold: float
+) -> Optional[dict[str, Any]]:
+    """What the live panel shows: position in the track, and how much was actually heard.
 
-
-def format_now_playing(playback: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
-    if not playback:
+    The two differ whenever someone seeks, which is the whole point -- `progress_ms`
+    says where the needle is, `heard_ratio` says what would count.
+    """
+    if not obs:
         return None
-    track = playback.get("item")
-    if not track or not track.get("id"):
-        return None
 
-    artists = track.get("artists") or []
-    duration_ms = int(track.get("duration_ms") or 0)
-    progress_ms = int(playback.get("progress_ms") or 0)
+    heard_ratio = session.heard_ratio if session else 0.0
     return {
-        "track_id": str(track["id"]),
-        "name": str(track.get("name") or "Unknown Track"),
-        "artist": str(
-            (artists[0].get("name") if artists and artists[0] else None) or "Unknown Artist"
-        ),
-        "duration_ms": duration_ms,
-        "progress_ms": progress_ms,
-        "completion_ratio": (progress_ms / duration_ms) if duration_ms else 0.0,
-        "is_playing": bool(playback.get("is_playing")),
+        "track_id": obs.track_id,
+        "name": obs.name,
+        "artist": obs.artist,
+        "duration_ms": obs.duration_ms,
+        "progress_ms": obs.progress_ms,
+        "completion_ratio": (obs.progress_ms / obs.duration_ms) if obs.duration_ms else 0.0,
+        "heard_ms": session.listened_ms if session else 0,
+        "heard_ratio": heard_ratio,
+        "counts": heard_ratio >= threshold,
+        "is_playing": obs.is_playing,
     }
 
 
@@ -96,8 +89,13 @@ class UserTracker:
         # Spotify call of its own.
         self.favorites_snapshot: list[dict[str, str]] = []
         self.favorites_membership: set[str] = set()
-        self._idle_cycles = 0
         self._last_capture_key: Optional[str] = None
+        # The playback currently being measured. Mirrored to an open row in `listens`,
+        # so a restart keeps whatever was heard before it rather than dropping it.
+        self.session: Optional[Session] = None
+        # Set when a playlist write failed, so a track that earned its place at the
+        # exact moment Spotify was unavailable isn't left waiting for its next play.
+        self._needs_reconcile = False
 
     # ------------------------------------------------------------- favourites
 
@@ -160,80 +158,108 @@ class UserTracker:
         qualifying = [
             track_id
             for track_id, row in self.db.play_counts(self.user_id).items()
-            if int(row["occurrences"]) >= threshold
+            if int(row["qualified_plays"]) >= threshold
         ]
         if not qualifying:
             return 0
         return self.add_to_favorites(self.spotify.client(self.user_id), qualifying)
 
-    # ------------------------------------------------------------------ sweep
+    # --------------------------------------------------------------- measuring
 
-    def _sweep(self, client: spotipy.Spotify) -> int:
-        """Fold new plays into the ledger. Returns how many were new."""
-        after = self.db.cursor_after(self.user_id)
-        response = client.current_user_recently_played(
-            limit=RECENTLY_PLAYED_LIMIT,
-            after=max(after - CURSOR_OVERLAP_MS, 0) if after else None,
+    def _close_session(
+        self,
+        ended_at: int,
+        settings: dict[str, Any],
+        client: Optional[spotipy.Spotify] = None,
+    ) -> None:
+        """Finish the open listen, record what was heard, and promote if it earned it."""
+        session = self.session
+        self.session = None
+        if not session or session.row_id is None:
+            return
+
+        result = listens.finalize(session, max(ended_at, session.last_observed_at))
+        threshold_ratio = float(settings["min_completion_ratio"])
+        qualified = result["completion_ratio"] >= threshold_ratio
+
+        count = self.db.close_listen(
+            row_id=session.row_id,
+            user_id=self.user_id,
+            track_id=result["track_id"],
+            name=result["name"],
+            artist=result["artist"],
+            played_at=result["played_at"],
+            duration_ms=result["duration_ms"],
+            listened_ms=result["listened_ms"],
+            completion_ratio=result["completion_ratio"],
+            qualified=qualified,
         )
-        items = (response or {}).get("items") or []
-        if not items:
-            return 0
+        log.info(
+            "Listen: %s - %s, heard %.0f%% (%s), %s qualified play(s)",
+            result["artist"],
+            result["name"],
+            result["completion_ratio"] * 100,
+            "counts" if qualified else f"below {threshold_ratio:.0%}",
+            count,
+        )
 
-        settings = self.db.settings(self.user_id)
-        threshold = int(settings["favorite_threshold"])
-        auto_add = bool(settings["auto_add_enabled"])
+        if not qualified:
+            return
 
-        newest = after
-        promoted: list[str] = []
-        new_plays = 0
-
-        for item in items:
-            track = (item or {}).get("track") or {}
-            track_id = track.get("id")
-            played_at_raw = item.get("played_at")
-            if not track_id or not played_at_raw:
-                continue
-
-            played_at = parse_played_at(played_at_raw)
-            newest = max(newest, played_at)
-
-            artists = track.get("artists") or []
-            occurrences = self.db.record_play(
-                user_id=self.user_id,
-                track_id=str(track_id),
-                name=str(track.get("name") or "Unknown Track"),
-                artist=str(
-                    (artists[0].get("name") if artists and artists[0] else None)
-                    or "Unknown Artist"
-                ),
-                played_at=played_at,
-                context_uri=((item.get("context") or {}).get("uri")),
-            )
-            if occurrences is None:
-                continue  # already counted on an earlier sweep
-            new_plays += 1
-            if auto_add and occurrences >= threshold:
-                promoted.append(str(track_id))
-
-        # Advance the cursor only after every row is committed, so a crash mid-sweep
-        # replays the window instead of skipping it.
-        if newest > after:
-            self.db.set_cursor_after(self.user_id, newest)
-
-        if promoted:
-            try:
-                added = self.add_to_favorites(client, promoted)
+        try:
+            client = client or self.spotify.client(self.user_id)
+            # A track whose final poll landed short of the threshold only clears it once
+            # the tail is credited, so the archive gets its last look here.
+            self._try_capture(client, settings, session, result["completion_ratio"])
+            if settings["auto_add_enabled"] and count >= int(settings["favorite_threshold"]):
+                added = self.add_to_favorites(client, [result["track_id"]])
                 if added:
-                    log.info("Added %s track(s) to favourites for user %s", added, self.user_id)
-            except spotipy.SpotifyException:
-                raise
-            except Exception as exc:
-                log.warning("Could not add favourites for user %s: %s", self.user_id, exc)
+                    log.info("Added %r to favourites for user %s", result["name"], self.user_id)
+        except spotipy.SpotifyException:
+            # The listen is already recorded; let the run loop see a 429 and back off.
+            # The reconcile on the next cycle is what actually gets the track filed.
+            self._needs_reconcile = True
+            raise
+        except Exception as exc:
+            self._needs_reconcile = True
+            log.warning("Could not file %r for user %s: %s", result["name"], self.user_id, exc)
 
-        # Spotify only retains the last 50 plays, so there is nothing older to page to:
-        # one request per sweep is always enough, and downtime beyond 50 tracks is
-        # unrecoverable no matter how we ask.
-        return new_plays
+    def _measure(
+        self,
+        obs: Optional[Observation],
+        settings: dict[str, Any],
+        client: Optional[spotipy.Spotify] = None,
+    ) -> None:
+        """Fold one poll into the open session, opening and closing sessions as needed."""
+        if self.session and (obs is None or not listens.continues(self.session, obs)):
+            # When another track is already playing we know precisely when this one
+            # stopped: the moment that one started. Otherwise all we have is now.
+            ended_at = (obs.at - obs.progress_ms) if obs else now_millis()
+            self._close_session(ended_at, settings, client)
+
+        if obs is None:
+            return
+
+        if self.session is None:
+            self.session = listens.start_session(obs)
+            self.session.row_id = self.db.open_listen(
+                user_id=self.user_id,
+                track_id=obs.track_id,
+                name=obs.name,
+                artist=obs.artist,
+                played_at=self.session.started_at,
+                duration_ms=obs.duration_ms,
+                context_uri=obs.context_uri,
+            )
+        else:
+            listens.observe(self.session, obs)
+            if self.session.row_id is not None:
+                self.db.update_open_listen(
+                    self.session.row_id,
+                    self.session.listened_ms,
+                    self.session.heard_ratio,
+                    self.session.duration_ms,
+                )
 
     def sweep_sources(self, client: spotipy.Spotify) -> dict[str, Any]:
         """Read every discovery source now, regardless of schedule."""
@@ -258,55 +284,87 @@ class UserTracker:
             log.warning("Source sweep failed for user %s: %s", self.user_id, exc)
 
     def _live_poll(self, client: spotipy.Spotify) -> bool:
-        """Refresh now-playing and run discovery capture. Returns True if playing."""
-        playback = client.current_playback()
-        self.now_playing = format_now_playing(playback)
+        """Measure playback, refresh now-playing, run discovery capture.
 
-        if not playback or not self.now_playing or not self.now_playing["is_playing"]:
+        Returns True if something is playing.
+        """
+        playback = client.current_playback()
+        settings = self.db.settings(self.user_id)
+        obs = listens.observation_from_playback(playback, now_millis())
+
+        self._measure(obs, settings, client)
+        self.now_playing = format_now_playing(
+            obs, self.session, float(settings["min_completion_ratio"])
+        )
+
+        if not obs or not obs.is_playing or not self.session:
             return False
 
-        settings = self.db.settings(self.user_id)
-
-        # One capture attempt per playback instance -- otherwise a track sitting above the
-        # completion ratio would re-enter capture on every poll.
-        started_at = int(playback.get("timestamp") or now_millis()) - int(
-            playback.get("progress_ms") or 0
-        )
-        capture_key = f"{self.now_playing['track_id']}:{started_at // 1000}"
-        if capture_key != self._last_capture_key:
-            captured = self.discovery.capture(self.user_id, client, settings, playback)
-            if captured:
-                self._last_capture_key = capture_key
-
+        self._try_capture(client, settings, self.session, self.session.heard_ratio)
         return True
+
+    def _try_capture(
+        self,
+        client: spotipy.Spotify,
+        settings: dict[str, Any],
+        session: Session,
+        heard_ratio: float,
+    ) -> None:
+        """Offer a session to the discovery archive, at most once per playback."""
+        key = f"{session.track_id}:{session.started_at}"
+        if key == self._last_capture_key:
+            return
+        try:
+            captured = self.discovery.capture(
+                self.user_id,
+                client,
+                settings,
+                track_id=session.track_id,
+                name=session.name,
+                artist=session.artist,
+                context_uri=session.context_uri,
+                heard_ratio=heard_ratio,
+            )
+        except spotipy.SpotifyException:
+            raise
+        except Exception as exc:
+            log.warning("Discovery capture failed for user %s: %s", self.user_id, exc)
+            return
+        if captured:
+            self._last_capture_key = key
+
+    def flush(self) -> None:
+        """Close the open listen on the way out, so pausing doesn't discard it."""
+        if not self.session:
+            return
+        try:
+            self._close_session(now_millis(), self.db.settings(self.user_id))
+        except Exception as exc:
+            log.warning("Could not close the open listen for user %s: %s", self.user_id, exc)
+            self.session = None
 
     # ------------------------------------------------------------------- loop
 
     async def _cycle(self) -> None:
         client = await asyncio.to_thread(self.spotify.client, self.user_id)
-        new_plays = await asyncio.to_thread(self._sweep, client)
-        playing = await asyncio.to_thread(self._live_poll, client)
+        await asyncio.to_thread(self._live_poll, client)
+        # One Spotify read per cycle at most: the playlist membership behind this is
+        # cached for 30s, so a 5-second poll doesn't turn into a 5-second playlist read.
         await asyncio.to_thread(self.refresh_favorites, client)
         await asyncio.to_thread(self._maybe_sweep_sources, client)
+
+        if self._needs_reconcile:
+            await asyncio.to_thread(self.reconcile_favorites)
+            self._needs_reconcile = False
+
         self.last_error = None
-
-        if playing or new_plays:
-            self._idle_cycles = 0
-        else:
-            self._idle_cycles += 1
-
-    def _sleep_seconds(self) -> int:
-        base = max(int(self.db.settings(self.user_id)["poll_interval"]), 10)
-        if self._idle_cycles < IDLE_CYCLES_BEFORE_BACKOFF:
-            return base
-        steps = self._idle_cycles - IDLE_CYCLES_BEFORE_BACKOFF + 2
-        return base * min(steps, MAX_IDLE_MULTIPLIER)
 
     async def run(self) -> None:
         log.info("Tracker started for user %s", self.user_id)
         try:
             while True:
-                delay = self._sleep_seconds()
+                # Fixed, except when Spotify itself tells us to slow down below.
+                delay = POLL_INTERVAL_SECONDS
                 try:
                     await self._cycle()
                 except SpotifyAuthError:
@@ -374,6 +432,7 @@ class TrackerManager:
             await task
         except asyncio.CancelledError:
             pass
+        await asyncio.to_thread(tracker.flush)
         tracker.now_playing = None
 
     async def start_all(self) -> None:

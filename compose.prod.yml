@@ -1,0 +1,22 @@
+services:
+  listen:
+    image: ghcr.io/nikkolaka/fav-songs-py:latest
+    environment:
+      CLIENT_ID: ${CLIENT_ID}
+      CLIENT_SECRET: ${CLIENT_SECRET}
+      REDIRECT_URI: ${REDIRECT_URI}
+      SESSION_SECRET: ${SESSION_SECRET}
+      COOKIE_SECURE: ${COOKIE_SECURE:-0}
+      DEFAULT_PLAYLIST_NAME: ${DEFAULT_PLAYLIST_NAME:-Favourite Songs}
+      FAVSONGS_DB_PATH: /app/data/favsongs.db
+    ports:
+      - ${APP_PORT:-8090}:8000
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
