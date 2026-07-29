@@ -9,6 +9,7 @@ from typing import Any, Optional
 
 from fastapi import Cookie, Depends, FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import discovery as discovery_mod
@@ -23,6 +24,11 @@ log = logging.getLogger("favsongs")
 
 SESSION_COOKIE = "favsongs_session"
 WEB_DIR = os.path.join(os.path.dirname(__file__), "web")
+FRONTEND_DIST = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
+
+# In production (Docker), the React build lives at this path.
+# In dev, Vite dev server handles the frontend.
+USE_REACT = os.path.isdir(FRONTEND_DIST)
 
 config = AppConfig.from_env()
 database = Database(config.db_path, config.fernet_key, config.default_playlist_name)
@@ -193,24 +199,28 @@ def build_state(user_id: Optional[int]) -> dict[str, Any]:
 # ------------------------------------------------------------------- routes
 
 
-@app.get("/", response_class=FileResponse)
-async def index() -> FileResponse:
-    return FileResponse(os.path.join(WEB_DIR, "index.html"))
+if USE_REACT:
+    app.mount("/assets", StaticFiles(directory=os.path.join(FRONTEND_DIST, "assets")), name="assets")
 
+    @app.get("/", response_class=FileResponse)
+    async def index() -> FileResponse:
+        return FileResponse(os.path.join(FRONTEND_DIST, "index.html"))
+else:
+    @app.get("/", response_class=FileResponse)
+    async def index() -> FileResponse:
+        return FileResponse(os.path.join(WEB_DIR, "index.html"))
 
-@app.get("/app.js")
-async def script() -> FileResponse:
-    return FileResponse(os.path.join(WEB_DIR, "app.js"), media_type="text/javascript")
+    @app.get("/app.js")
+    async def script() -> FileResponse:
+        return FileResponse(os.path.join(WEB_DIR, "app.js"), media_type="text/javascript")
 
+    @app.get("/pico.min.css")
+    async def pico() -> FileResponse:
+        return FileResponse(os.path.join(WEB_DIR, "pico.min.css"), media_type="text/css")
 
-@app.get("/pico.min.css")
-async def pico() -> FileResponse:
-    return FileResponse(os.path.join(WEB_DIR, "pico.min.css"), media_type="text/css")
-
-
-@app.get("/overrides.css")
-async def overrides() -> FileResponse:
-    return FileResponse(os.path.join(WEB_DIR, "overrides.css"), media_type="text/css")
+    @app.get("/overrides.css")
+    async def overrides() -> FileResponse:
+        return FileResponse(os.path.join(WEB_DIR, "overrides.css"), media_type="text/css")
 
 
 @app.get("/healthz")
