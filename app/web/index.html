@@ -102,24 +102,26 @@
         <!-- ======================================================= history -->
         <details id="history-section">
           <summary>History <span class="muted" id="history-summary"></span></summary>
-          <input
-            type="search"
-            id="history-q"
-            placeholder="Search by track or artist"
-            aria-label="Search history"
-            autocomplete="off"
-          />
-          <p id="history-empty" class="muted" hidden>Nothing matches.</p>
-          <div id="history-list"></div>
-          <footer>
-            <button id="history-more" class="secondary" hidden>Load more</button>
-          </footer>
+          <article>
+            <input
+              type="search"
+              id="history-q"
+              placeholder="Search by track or artist"
+              aria-label="Search history"
+              autocomplete="off"
+            />
+            <p id="history-empty" class="muted" hidden>Nothing matches.</p>
+            <div id="history-list"></div>
+            <footer>
+              <button id="history-more" class="secondary" hidden>Load more</button>
+            </footer>
+          </article>
         </details>
 
         <!-- ===================================================== discovery -->
         <details id="discovery-section">
           <summary><span id="discovery-month">Discovery</span></summary>
-
+          <article>
           <button id="sweep-now" class="secondary outline" style="margin-bottom:1rem">Sweep now</button>
 
           <div id="context-prompt" hidden>
@@ -176,11 +178,13 @@
             </form>
             <ul id="discovery-months"></ul>
           </details>
+          </article>
         </details>
 
         <!-- ====================================================== settings -->
         <details id="settings-section">
           <summary>Settings</summary>
+          <article>
           <form id="settings-form">
             <label>
               Listening threshold &mdash; <strong id="ratio-value"></strong> of a track
@@ -243,6 +247,7 @@
             </p>
             <button id="disconnect" class="secondary">Disconnect and erase my data</button>
           </details>
+          </article>
         </details>
       </div>
     </main>

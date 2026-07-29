@@ -124,6 +124,23 @@ ul.plain button {
   color: var(--pico-muted-color);
 }
 
+/* ------------------------------------------------------------- details */
+
+#app > details {
+  margin-bottom: 1rem;
+}
+
+#app > details > summary {
+  padding-block: 0.6rem;
+  cursor: pointer;
+  font-weight: 500;
+  color: var(--pico-color);
+}
+
+#app > details > article {
+  margin-top: 0.75rem;
+}
+
 /* ------------------------------------------------------------- now playing */
 
 .heard {
