@@ -12,7 +12,7 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-RUN groupadd -r app && useradd -r -g app -d /app app
+RUN groupadd -r app -g 1000 && useradd -r -g app -u 1000 -d /app app
 
 WORKDIR /app
 
