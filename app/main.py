@@ -241,6 +241,7 @@ def build_state(user_id: Optional[int]) -> dict[str, Any]:
             "next_favorite": database.next_favorite_candidate(user_id, threshold),
         },
         "favorites": favorites,
+        "favorite_track_ids": list(tracker.favorites_membership),
         "discovery": {
             "month": month,
             "month_name": discovery_mod.month_playlist_name(month),
@@ -294,23 +295,14 @@ async def api_state(user_id: Optional[int] = Depends(optional_user_id)) -> dict[
     return build_state(user_id)
 
 
-def parse_cursor(raw: Optional[str]) -> Optional[tuple[int, int]]:
-    """`<played_at>_<id>` from the previous page, or None for the first one."""
-    if not raw:
-        return None
-    played_at, _, row_id = raw.partition("_")
-    try:
-        return int(played_at), int(row_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Malformed page cursor") from None
-
-
 @app.get("/api/history")
 async def api_history(
     q: Optional[str] = None,
     start: Optional[int] = None,
     end: Optional[int] = None,
     qualified: Optional[bool] = None,
+    favorites_only: Optional[bool] = None,
+    sort: str = "time",
     cursor: Optional[str] = None,
     limit: int = 50,
     user_id: int = Depends(current_user_id),
@@ -324,8 +316,14 @@ async def api_history(
         return await asyncio.to_thread(
             demo_mod.demo_history,
             query=q, start=start, end=end, qualified=qualified,
-            cursor=parse_cursor(cursor), limit=limit,
+            cursor=None, limit=limit,
         )
+
+    favorite_ids = None
+    if favorites_only:
+        tracker = trackers.get(user_id)
+        favorite_ids = tracker.favorites_membership
+
     return await asyncio.to_thread(
         database.history,
         user_id,
@@ -333,7 +331,10 @@ async def api_history(
         start=start,
         end=end,
         qualified=qualified,
-        cursor=parse_cursor(cursor),
+        favorites_only=favorites_only,
+        favorite_track_ids=favorite_ids,
+        sort=sort,
+        cursor=cursor,
         limit=limit,
     )
 

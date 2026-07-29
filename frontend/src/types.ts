@@ -102,6 +102,7 @@ export interface AppState {
   settings: Settings
   stats: Stats
   favorites: Favorite[]
+  favorite_track_ids: string[]
   discovery: Discovery
 }
 
@@ -113,6 +114,7 @@ export interface HistoryItem {
   completion_ratio: number | null
   qualified: boolean
   is_open: boolean
+  play_count: number
 }
 
 export interface HistoryPage {

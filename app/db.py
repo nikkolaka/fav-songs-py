@@ -13,6 +13,7 @@ import os
 import re
 import sqlite3
 import time
+import urllib.parse
 from threading import Lock
 from typing import Any, Optional
 
@@ -749,26 +750,43 @@ class Database:
         start: Optional[int] = None,
         end: Optional[int] = None,
         qualified: Optional[bool] = None,
-        cursor: Optional[tuple[int, int]] = None,
+        favorites_only: Optional[bool] = None,
+        favorite_track_ids: Optional[set[str]] = None,
+        sort: str = "time",
+        cursor: Optional[str] = None,
         limit: int = 50,
     ) -> dict[str, Any]:
-        """One page of listening history, newest first.
+        """One page of listening history.
 
-        Paged by keyset rather than OFFSET: the cursor is the last row's
-        (played_at, id), so page 500 costs exactly what page 1 does instead of walking
-        everything above it.
+        Sorted by the chosen column (default played_at). Paged by keyset: the cursor
+        carries the last row's sort-column value plus its id.
         """
         limit = max(1, min(int(limit), HISTORY_PAGE_LIMIT))
+
+        sort_cols: dict[str, tuple[str, str]] = {
+            "time": ("l.played_at", "played_at"),
+            "name": ("l.name", "name"),
+            "artist": ("l.artist", "artist"),
+            "length": ("l.duration_ms", "duration_ms"),
+            "completion": ("l.completion_ratio", "completion_ratio"),
+        }
+        col_sql, col_name = sort_cols.get(sort, sort_cols["time"])
+
         joins = ""
+        extra_cols = ""
         where = ["l.user_id = ?"]
         params: list[Any] = [user_id]
+
+        if extra_cols or True:
+            # Always join play_counts for the per-track tally shown in the UI.
+            joins += " LEFT JOIN play_counts pc ON pc.user_id = l.user_id AND pc.track_id = l.track_id"
+            extra_cols += ", COALESCE(pc.qualified_plays, 0) AS play_count"
 
         if query and query.strip():
             if self.fts:
                 match = fts_query(query)
                 if match:
-                    # An FTS5 MATCH has to name the table, not an alias.
-                    joins = "JOIN listens_fts ON listens_fts.rowid = l.id"
+                    joins += " JOIN listens_fts ON listens_fts.rowid = l.id"
                     where.append("listens_fts MATCH ?")
                     params.append(match)
             else:
@@ -783,16 +801,27 @@ class Database:
         if qualified is not None:
             where.append("l.qualified = ?")
             params.append(1 if qualified else 0)
+        if favorites_only and favorite_track_ids:
+            placeholders = ",".join("?" * len(favorite_track_ids))
+            where.append(f"l.track_id IN ({placeholders})")
+            params.extend(favorite_track_ids)
         if cursor is not None:
-            where.append("(l.played_at < ? OR (l.played_at = ? AND l.id < ?))")
-            params += [cursor[0], cursor[0], cursor[1]]
+            parts = cursor.split("|", 2)
+            if len(parts) == 3 and parts[0] == sort:
+                cur_val, cur_id = parts[1], int(parts[2])
+                if sort == "time" or sort == "length" or sort == "completion":
+                    cur_val = float(cur_val)
+                else:
+                    cur_val = urllib.parse.unquote(cur_val)
+                where.append(f"({col_sql} < ? OR ({col_sql} = ? AND l.id < ?))")
+                params += [cur_val, cur_val, cur_id]
 
         sql = f"""
             SELECT l.id, l.track_id, l.name, l.artist, l.played_at, l.duration_ms,
-                   l.listened_ms, l.completion_ratio, l.qualified, l.is_open
+                   l.listened_ms, l.completion_ratio, l.qualified, l.is_open{extra_cols}
               FROM listens l {joins}
              WHERE {' AND '.join(where)}
-             ORDER BY l.played_at DESC, l.id DESC
+             ORDER BY {col_sql} DESC, l.id DESC
              LIMIT ?
         """
         with self.lock:
@@ -806,7 +835,13 @@ class Database:
         next_cursor = None
         if len(rows) > limit and items:
             last = items[-1]
-            next_cursor = f"{last['played_at']}_{last['id']}"
+            raw = last[col_name]
+            encoded = (
+                urllib.parse.quote(str(raw), safe="")
+                if isinstance(raw, str)
+                else str(raw)
+            )
+            next_cursor = f"{sort}|{encoded}|{last['id']}"
         return {"items": items, "next_cursor": next_cursor}
 
     def history_summary(self, user_id: int) -> dict[str, Any]:

@@ -12,11 +12,19 @@ export async function fetchHistory(params: {
   q?: string
   limit?: number
   cursor?: string | null
+  start?: number
+  end?: number
+  favorites_only?: boolean
+  sort?: string
 }): Promise<HistoryPage> {
   const search = new URLSearchParams()
   if (params.q) search.set("q", params.q)
   search.set("limit", String(params.limit ?? 50))
   if (params.cursor) search.set("cursor", params.cursor)
+  if (params.start) search.set("start", String(params.start))
+  if (params.end) search.set("end", String(params.end))
+  if (params.favorites_only) search.set("favorites_only", "1")
+  if (params.sort) search.set("sort", params.sort)
   const res = await fetch(`/api/history?${search}`)
   if (!res.ok) throw new Error("Failed to fetch history")
   return res.json()

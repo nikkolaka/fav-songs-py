@@ -101,6 +101,7 @@ def demo_state() -> dict:
                 "in_playlist": False,
             },
         ],
+        "favorite_track_ids": ["t1", "t2"],
         "discovery": {
             "month": "2026-07",
             "month_name": "July's Discover",
@@ -159,7 +160,7 @@ def demo_state() -> dict:
 
 
 def demo_history(query: str = "", start: int = 0, end: int = 0, qualified: bool = None,
-                 cursor: tuple = None, limit: int = 50) -> dict:
+                 cursor: str = None, limit: int = 50) -> dict:
     _now = _MS
     _day = 86_400_000
 
@@ -208,14 +209,20 @@ def demo_history(query: str = "", start: int = 0, end: int = 0, qualified: bool 
         filtered = [i for i in filtered if i[2] <= end]
 
     if cursor:
-        cursor_ms, cursor_id = cursor
-        filtered = [i for i in filtered if i[2] < cursor_ms or (i[2] == cursor_ms and i <= cursor_id)]
+        parts = cursor.split("|")
+        if len(parts) == 3:
+            try:
+                cur_val, cur_id = float(parts[1]), int(parts[2])
+                filtered = [i for i in filtered if i[2] < cur_val or (i[2] == cur_val and i <= cur_id)]
+            except (ValueError, IndexError):
+                pass
 
     page = filtered[:limit]
     next_cursor = None
     if len(filtered) > limit:
         last = page[-1]
-        next_cursor = f"{last[2]}_{page.index(last)}"
+        idx = page.index(last)
+        next_cursor = f"time|{last[2]}|{idx}"
 
     return {
         "items": [
@@ -227,6 +234,7 @@ def demo_history(query: str = "", start: int = 0, end: int = 0, qualified: bool 
                 "completion_ratio": ratio,
                 "qualified": qual,
                 "is_open": open_,
+                "play_count": (i % 15) + 1,
             }
             for i, (name, artist, ts, ratio, qual, open_) in enumerate(page)
         ],

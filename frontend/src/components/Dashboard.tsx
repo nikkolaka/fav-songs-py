@@ -3,7 +3,6 @@ import type { AppState } from "@/types"
 import { post } from "@/api"
 import { NowPlayingCard } from "@/components/NowPlayingCard"
 import { PinnedStatsBar } from "@/components/PinnedStatsBar"
-import { FavouritesSection } from "@/components/FavouritesSection"
 import { HistorySection } from "@/components/HistorySection"
 import { StatisticsSection } from "@/components/StatisticsSection"
 import { DiscoverySection } from "@/components/DiscoverySection"
@@ -53,7 +52,7 @@ export function Dashboard({ state, onRefresh }: Props) {
     })
   }
 
-  const { user, tracker_running: trackerRunning, now_playing, favorites, discovery, settings } = state
+  const { user, tracker_running: trackerRunning, now_playing, discovery, settings, favorite_track_ids } = state
   const pinned = (settings.pinned_stats ?? []) as string[]
 
   return (
@@ -94,16 +93,14 @@ export function Dashboard({ state, onRefresh }: Props) {
 
         <NowPlayingCard now={now_playing} />
 
-        <PinnedStatsBar pinnedStats={pinned} />
+        {pinned.length > 0 && <PinnedStatsBar pinnedStats={pinned} />}
 
         <StatisticsSection
           pinnedStats={pinned}
           onPinsChanged={onRefresh}
         />
 
-        <FavouritesSection favorites={favorites} act={act} />
-
-        <HistorySection />
+        <HistorySection favoriteTrackIds={favorite_track_ids} />
 
         <DiscoverySection discovery={discovery} act={act} />
 

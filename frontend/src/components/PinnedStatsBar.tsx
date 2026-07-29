@@ -42,8 +42,6 @@ export function PinnedStatsBar({ pinnedStats }: Props) {
     }
   }, [pinnedStats])
 
-  if (!pinnedStats.length) return null
-
   return (
     <Card className="p-3">
       <div className="flex items-center gap-2">
