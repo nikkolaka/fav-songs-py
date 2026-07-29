@@ -200,8 +200,14 @@
               </label>
               <label>
                 <input type="checkbox" name="playlist_public" role="switch" />
-                Make new playlists public
+                List new playlists on my Spotify profile
               </label>
+              <small class="muted">
+                Spotify often ignores this over the API &mdash; playlists created private
+                still read back as public. It never controls link access either: anyone
+                with the link can open a playlist regardless. For real privacy, set it in
+                the Spotify app.
+              </small>
             </fieldset>
 
             <button type="submit">Save settings</button>

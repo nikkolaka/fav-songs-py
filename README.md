@@ -75,6 +75,14 @@ gives artist names only, each new track costs one `GET /tracks/{id}` to resolve 
 - Blocked tracks are kept in `discovery_blocked` and listed in the UI, so the filter is auditable
   and a blocked track doesn't cost an API lookup on every sweep for the rest of the month.
 
+### Playlist privacy is not ours to control
+
+The `public` flag is passed on create, but Spotify largely ignores it — a playlist created
+with `public: false` reads back as `public: true`, confirmed on this account. Even when it
+does stick, it only governs whether the playlist is listed on your profile and in search;
+it has never controlled link access, so anyone with the URL can open the playlist either
+way. Set playlist privacy in the Spotify client if it matters.
+
 ### One caveat on the playlist naming
 
 `July's Discover` carries no year, so July 2027 will resolve to the same name as July 2026. The
