@@ -1,7 +1,6 @@
 import { useState } from "react"
 import type { AppState } from "@/types"
 import { post } from "@/api"
-import { Button } from "@/components/ui/button"
 import { NowPlayingCard } from "@/components/NowPlayingCard"
 import { PinnedStatsBar } from "@/components/PinnedStatsBar"
 import { FavouritesSection } from "@/components/FavouritesSection"
@@ -9,6 +8,7 @@ import { HistorySection } from "@/components/HistorySection"
 import { StatisticsSection } from "@/components/StatisticsSection"
 import { DiscoverySection } from "@/components/DiscoverySection"
 import { SettingsSection } from "@/components/SettingsSection"
+import { ControlsCard } from "@/components/ControlsCard"
 
 interface Props {
   state: AppState
@@ -45,6 +45,14 @@ export function Dashboard({ state, onRefresh }: Props) {
     })
   }
 
+  async function disconnect() {
+    if (!confirm("Erase your listening history, archive and tokens from this server?")) return
+    await act(async () => {
+      await fetch("/api/auth/disconnect", { method: "POST" })
+      window.location.reload()
+    })
+  }
+
   const { user, tracker_running: trackerRunning, now_playing, favorites, discovery, settings } = state
   const pinned = (settings.pinned_stats ?? []) as string[]
 
@@ -59,23 +67,14 @@ export function Dashboard({ state, onRefresh }: Props) {
               {user.display_name}
             </span>
           </div>
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-muted-foreground hidden sm:inline">
-              {trackerRunning ? "Tracking" : "Paused"}
-            </span>
-            <Button
-              variant={trackerRunning ? "default" : "outline"}
-              size="sm"
-              className="h-7 text-xs"
-              onClick={toggleTracker}
-              aria-label={trackerRunning ? "Stop tracker" : "Start tracker"}
-            >
-              {trackerRunning ? "Stop" : "Start"}
-            </Button>
-            <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={logout}>
-              Log out
-            </Button>
-          </div>
+          <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
+            <span
+              className={`inline-block size-1.5 rounded-full ${
+                trackerRunning ? "bg-emerald-400" : "bg-muted-foreground/40"
+              }`}
+            />
+            {trackerRunning ? "Tracking" : "Paused"}
+          </span>
         </div>
       </header>
 
@@ -109,6 +108,13 @@ export function Dashboard({ state, onRefresh }: Props) {
         <DiscoverySection discovery={discovery} act={act} />
 
         <SettingsSection settings={settings} act={act} onNotify={notify} />
+
+        <ControlsCard
+          trackerRunning={trackerRunning}
+          onToggleTracker={toggleTracker}
+          onLogout={logout}
+          onDisconnect={disconnect}
+        />
       </div>
     </div>
   )

@@ -43,14 +43,6 @@ export function SettingsSection({ settings, act, onNotify }: Props) {
     onNotify("Settings saved.", false)
   }
 
-  async function disconnect() {
-    if (!confirm("Erase your listening history, archive and tokens from this server?")) return
-    await act(async () => {
-      await fetch("/api/auth/disconnect", { method: "POST" })
-      window.location.reload()
-    })
-  }
-
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
       <Card className="p-4">
@@ -120,23 +112,6 @@ export function SettingsSection({ settings, act, onNotify }: Props) {
 
             <Button type="submit" size="sm">Save settings</Button>
           </form>
-
-          <Separator />
-
-          <Collapsible>
-            <CollapsibleTrigger className="text-xs text-muted-foreground hover:underline">
-              Disconnect
-            </CollapsibleTrigger>
-            <CollapsibleContent className="mt-2 space-y-2">
-              <p className="text-xs text-muted-foreground">
-                Removes your tokens, listening history and archive from this server.
-                Playlists already in your Spotify account are left alone.
-              </p>
-              <Button variant="outline" size="sm" onClick={disconnect}>
-                Disconnect and erase my data
-              </Button>
-            </CollapsibleContent>
-          </Collapsible>
         </CollapsibleContent>
       </Card>
     </Collapsible>
