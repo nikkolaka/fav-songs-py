@@ -113,10 +113,12 @@ function renderDiscovery(discovery) {
       (row) => `
       <li>
         <span>
-          <strong>${esc(row.sample_track)}</strong><br />
-          <small class="muted">${row.play_count} play${
-            row.play_count === 1 ? "" : "s"
-          } from playlist ${esc(row.playlist_id)}</small>
+          <strong>${esc(row.title || row.sample_track)}</strong><br />
+          <small class="muted">${
+            row.title ? `heard: ${esc(row.sample_track)} &middot; ` : ""
+          }${row.play_count} play${row.play_count === 1 ? "" : "s"} &middot; ${esc(
+            row.playlist_id,
+          )}</small>
         </span>
         <span class="context-actions">
           <button data-label-context="${esc(row.playlist_id)}" data-label="Discover Weekly">
@@ -145,6 +147,28 @@ function renderDiscovery(discovery) {
     )
     .join("");
 
+  const blocked = discovery.blocked || [];
+  $("blocked-details").hidden = blocked.length === 0;
+  $("blocked-count").textContent = blocked.length;
+  $("blocked-tracks").className = "plain";
+  $("blocked-tracks").innerHTML = blocked
+    .map(
+      (track) => `
+      <li>
+        <span><strong>${esc(track.name)}</strong><br />
+        <small class="muted">${esc(track.artist)}</small></span>
+        <small class="muted">${esc(track.reason)}</small>
+      </li>`,
+    )
+    .join("");
+
+  const bl = discovery.blocklist || {};
+  $("blocklist-status").innerHTML = bl.artists
+    ? `AI blocklist: ${bl.artists.toLocaleString()} artists, updated ${ago(
+        bl.fetched_at * 1000,
+      )}${bl.error ? ` &mdash; last refresh failed: ${esc(bl.error)}` : ""}`
+    : "AI blocklist unavailable &mdash; nothing is being filtered.";
+
   $("discovery-sources").className = "plain";
   $("discovery-sources").innerHTML = discovery.sources.length
     ? discovery.sources
@@ -152,7 +176,13 @@ function renderDiscovery(discovery) {
           (source) => `
           <li>
             <span>${esc(source.label)}<br />
-            <small class="muted">${esc(source.playlist_id)}</small></span>
+            <small class="muted">${esc(source.playlist_id)}</small>
+            ${
+              source.degraded
+                ? `<br /><small class="pico-color-red-500">Full read unavailable
+                   (${esc(source.degraded)}) &mdash; falling back to what you play.</small>`
+                : ""
+            }</span>
             <button data-remove-source="${esc(source.playlist_id)}" class="secondary outline">
               Remove
             </button>
@@ -300,6 +330,24 @@ $("remove-selected").addEventListener("click", () => {
   act(() =>
     api("/api/favorites/remove", { method: "POST", body: JSON.stringify({ track_ids }) }),
   );
+});
+
+$("sweep-now").addEventListener("click", () => {
+  const button = $("sweep-now");
+  button.setAttribute("aria-busy", "true");
+  button.disabled = true;
+  act(async () => {
+    try {
+      const result = await api("/api/discovery/sweep", { method: "POST" });
+      const parts = [`${result.archived} archived`];
+      if (result.blocked) parts.push(`${result.blocked} filtered as AI`);
+      if (result.errors.length) parts.push(`${result.errors.length} source unreadable`);
+      notify(parts.join(", "), Boolean(result.errors.length));
+    } finally {
+      button.removeAttribute("aria-busy");
+      button.disabled = false;
+    }
+  });
 });
 
 $("source-form").addEventListener("submit", (event) => {

@@ -9,6 +9,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from app.aiblocklist import AiBlocklist  # noqa: E402
 from app.db import Database  # noqa: E402
 from app.spotify import SpotifyService  # noqa: E402
 from app.tracker import UserTracker  # noqa: E402
@@ -46,6 +47,13 @@ class FakeSpotify:
         self.playback: Optional[dict[str, Any]] = None
         self.calls: list[str] = []
         self._next_id = 0
+        # track_id -> artist ids, for the AI blocklist lookup
+        self.track_artists: dict[str, list[str]] = {}
+
+    def track(self, track_id, market=None):
+        self.calls.append("track")
+        ids = self.track_artists.get(track_id, [f"artist-of-{track_id}"])
+        return {"id": track_id, "artists": [{"id": i, "name": i} for i in ids]}
 
     # --- history
 
@@ -138,8 +146,21 @@ def spotify() -> FakeSpotify:
 
 
 @pytest.fixture
-def tracker(db: Database, user_id: int, spotify: FakeSpotify) -> UserTracker:
-    return UserTracker(user_id, db, FakeService(spotify))
+def blocklist(tmp_path) -> AiBlocklist:
+    """A loaded blocklist that never touches the network (refresh is a no-op here)."""
+    csv_path = tmp_path / "ai-artists.csv"
+    rows = "\n".join(f"Fake AI Act {i},aiartist{i}" for i in range(600))
+    csv_path.write_text(f"artist,id\nSynthwave Ghost,aiartist-known\n{rows}\n", encoding="utf-8")
+    instance = AiBlocklist(str(csv_path))
+    instance.refresh = lambda force=False: False
+    return instance
+
+
+@pytest.fixture
+def tracker(
+    db: Database, user_id: int, spotify: FakeSpotify, blocklist: AiBlocklist
+) -> UserTracker:
+    return UserTracker(user_id, db, FakeService(spotify), blocklist)
 
 
 @pytest.fixture

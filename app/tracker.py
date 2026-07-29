@@ -25,7 +25,8 @@ from typing import Any, Optional
 import spotipy
 
 from . import playlists
-from .db import Database, now_millis
+from .aiblocklist import AiBlocklist
+from .db import Database, now_millis, now_seconds
 from .discovery import Discovery
 from .playlists import PlaylistCache
 from .spotify import SpotifyAuthError, SpotifyService, retry_after_seconds
@@ -43,6 +44,11 @@ FAVORITES_DESCRIPTION = "Songs you keep coming back to. Maintained automatically
 # Back off when nothing is happening, so five idle users don't burn quota all day.
 MAX_IDLE_MULTIPLIER = 4
 IDLE_CYCLES_BEFORE_BACKOFF = 5
+
+# Discover Weekly refreshes on Mondays, so six hours catches every edition with room to
+# spare while costing one page fetch per source per sweep.
+SOURCE_SWEEP_INTERVAL_SECONDS = 6 * 3600
+SOURCE_SWEEP_RETRY_SECONDS = 900
 
 
 def parse_played_at(value: str) -> int:
@@ -74,12 +80,15 @@ def format_now_playing(playback: Optional[dict[str, Any]]) -> Optional[dict[str,
 
 
 class UserTracker:
-    def __init__(self, user_id: int, db: Database, spotify: SpotifyService):
+    def __init__(
+        self, user_id: int, db: Database, spotify: SpotifyService, blocklist: AiBlocklist
+    ):
         self.user_id = user_id
         self.db = db
         self.spotify = spotify
         self.cache = PlaylistCache()
-        self.discovery = Discovery(db, self.cache)
+        self.discovery = Discovery(db, self.cache, blocklist)
+        self.last_sweep: Optional[dict[str, Any]] = None
         self.task: Optional[asyncio.Task] = None
         self.now_playing: Optional[dict[str, Any]] = None
         self.last_error: Optional[str] = None
@@ -226,6 +235,28 @@ class UserTracker:
         # unrecoverable no matter how we ask.
         return new_plays
 
+    def sweep_sources(self, client: spotipy.Spotify) -> dict[str, Any]:
+        """Read every discovery source now, regardless of schedule."""
+        settings = self.db.settings(self.user_id)
+        summary = self.discovery.sweep_sources(self.user_id, client, settings)
+        self.db.set_last_source_sweep(self.user_id, now_seconds())
+        self.last_sweep = {**summary, "at": now_seconds()}
+        return summary
+
+    def _maybe_sweep_sources(self, client: spotipy.Spotify) -> None:
+        due = self.db.last_source_sweep(self.user_id) + SOURCE_SWEEP_INTERVAL_SECONDS
+        if now_seconds() < due:
+            return
+        try:
+            self.sweep_sources(client)
+        except Exception as exc:
+            # Come back in minutes rather than hours, but don't retry every cycle.
+            self.db.set_last_source_sweep(
+                self.user_id,
+                now_seconds() - SOURCE_SWEEP_INTERVAL_SECONDS + SOURCE_SWEEP_RETRY_SECONDS,
+            )
+            log.warning("Source sweep failed for user %s: %s", self.user_id, exc)
+
     def _live_poll(self, client: spotipy.Spotify) -> bool:
         """Refresh now-playing and run discovery capture. Returns True if playing."""
         playback = client.current_playback()
@@ -256,6 +287,7 @@ class UserTracker:
         new_plays = await asyncio.to_thread(self._sweep, client)
         playing = await asyncio.to_thread(self._live_poll, client)
         await asyncio.to_thread(self.refresh_favorites, client)
+        await asyncio.to_thread(self._maybe_sweep_sources, client)
         self.last_error = None
 
         if playing or new_plays:
@@ -304,15 +336,16 @@ class UserTracker:
 class TrackerManager:
     """Owns one asyncio task per connected user."""
 
-    def __init__(self, db: Database, spotify: SpotifyService):
+    def __init__(self, db: Database, spotify: SpotifyService, blocklist: AiBlocklist):
         self.db = db
         self.spotify = spotify
+        self.blocklist = blocklist
         self.trackers: dict[int, UserTracker] = {}
 
     def get(self, user_id: int) -> UserTracker:
         tracker = self.trackers.get(user_id)
         if not tracker:
-            tracker = UserTracker(user_id, self.db, self.spotify)
+            tracker = UserTracker(user_id, self.db, self.spotify, self.blocklist)
             self.trackers[user_id] = tracker
         return tracker
 

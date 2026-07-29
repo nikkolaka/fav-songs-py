@@ -78,28 +78,47 @@ CREATE TABLE IF NOT EXISTS play_counts (
 
 CREATE TABLE IF NOT EXISTS cursors (
     user_id                INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-    recently_played_after  INTEGER NOT NULL DEFAULT 0
+    recently_played_after  INTEGER NOT NULL DEFAULT 0,
+    last_source_sweep      INTEGER NOT NULL DEFAULT 0
 );
 
--- Playlists whose plays get filed into the monthly discovery archive.
+-- Playlists whose contents get filed into the monthly discovery archive.
+-- `degraded` holds the last embed-read failure, so a silently broken source is visible.
 CREATE TABLE IF NOT EXISTS discovery_sources (
     user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     playlist_id  TEXT    NOT NULL,
     label        TEXT    NOT NULL,
     created_at   INTEGER NOT NULL,
+    degraded     TEXT,
     PRIMARY KEY (user_id, playlist_id)
 );
 
--- Playlist contexts we have seen but cannot name, because Spotify-owned playlists are
--- unreadable. Surfaced in the UI so the user can label one as a discovery source.
+-- Playlist contexts seen in playback that aren't registered sources. `title` is the
+-- oEmbed name when we could resolve one, so the UI shows "Release Radar" rather than a
+-- 22-character hash.
 CREATE TABLE IF NOT EXISTS seen_contexts (
     user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     playlist_id   TEXT    NOT NULL,
     last_seen     INTEGER NOT NULL,
     sample_track  TEXT    NOT NULL,
+    title         TEXT,
     play_count    INTEGER NOT NULL DEFAULT 1,
     dismissed     INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (user_id, playlist_id)
+);
+
+-- Tracks filtered out by the AI blocklist. Kept rather than discarded so the filter is
+-- auditable -- you can see nothing legitimate was dropped -- and so a blocked track
+-- isn't re-resolved against the API on every sweep.
+CREATE TABLE IF NOT EXISTS discovery_blocked (
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    month       TEXT    NOT NULL,
+    track_id    TEXT    NOT NULL,
+    name        TEXT    NOT NULL,
+    artist      TEXT    NOT NULL,
+    reason      TEXT    NOT NULL,
+    blocked_at  INTEGER NOT NULL,
+    PRIMARY KEY (user_id, month, track_id)
 );
 
 CREATE TABLE IF NOT EXISTS discovery_archive (
@@ -158,7 +177,26 @@ class Database:
         self.default_playlist_name = default_playlist_name
         with self.lock:
             self.conn.executescript(SCHEMA)
+            self._migrate()
             self.conn.commit()
+
+    def _migrate(self) -> None:
+        """Add columns introduced after a database was first created.
+
+        CREATE TABLE IF NOT EXISTS won't alter an existing table, so a deployment that
+        already has data needs these applied explicitly.
+        """
+        additions = (
+            ("discovery_sources", "degraded", "TEXT"),
+            ("seen_contexts", "title", "TEXT"),
+            ("cursors", "last_source_sweep", "INTEGER NOT NULL DEFAULT 0"),
+        )
+        for table, column, ddl in additions:
+            existing = {
+                row["name"] for row in self.conn.execute(f"PRAGMA table_info({table})")
+            }
+            if column not in existing:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
     def close(self) -> None:
         with self.lock:
@@ -473,12 +511,22 @@ class Database:
         with self.lock:
             rows = self.conn.execute(
                 """
-                SELECT playlist_id, label FROM discovery_sources
+                SELECT playlist_id, label, degraded FROM discovery_sources
                 WHERE user_id = ? ORDER BY created_at
                 """,
                 (user_id,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def set_source_degraded(
+        self, user_id: int, playlist_id: str, error: Optional[str]
+    ) -> None:
+        with self.lock:
+            self.conn.execute(
+                "UPDATE discovery_sources SET degraded = ? WHERE user_id = ? AND playlist_id = ?",
+                (error, user_id, playlist_id),
+            )
+            self.conn.commit()
 
     def add_discovery_source(self, user_id: int, playlist_id: str, label: str) -> None:
         with self.lock:
@@ -505,19 +553,25 @@ class Database:
             self.conn.commit()
 
     def note_seen_context(
-        self, user_id: int, playlist_id: str, sample_track: str
+        self,
+        user_id: int,
+        playlist_id: str,
+        sample_track: str,
+        title: Optional[str] = None,
     ) -> None:
         with self.lock:
             self.conn.execute(
                 """
-                INSERT INTO seen_contexts (user_id, playlist_id, last_seen, sample_track)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO seen_contexts
+                    (user_id, playlist_id, last_seen, sample_track, title)
+                VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(user_id, playlist_id) DO UPDATE SET
                     last_seen    = excluded.last_seen,
                     sample_track = excluded.sample_track,
+                    title        = COALESCE(excluded.title, seen_contexts.title),
                     play_count   = seen_contexts.play_count + 1
                 """,
-                (user_id, playlist_id, now_seconds(), sample_track),
+                (user_id, playlist_id, now_seconds(), sample_track, title),
             )
             self.conn.commit()
 
@@ -525,13 +579,84 @@ class Database:
         with self.lock:
             rows = self.conn.execute(
                 """
-                SELECT playlist_id, sample_track, play_count, last_seen
+                SELECT playlist_id, sample_track, title, play_count, last_seen
                 FROM seen_contexts
                 WHERE user_id = ? AND dismissed = 0
                 ORDER BY play_count DESC, last_seen DESC
                 LIMIT 5
                 """,
                 (user_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def last_source_sweep(self, user_id: int) -> int:
+        with self.lock:
+            row = self.conn.execute(
+                "SELECT last_source_sweep FROM cursors WHERE user_id = ?", (user_id,)
+            ).fetchone()
+        return int(row["last_source_sweep"]) if row else 0
+
+    def set_last_source_sweep(self, user_id: int, value: int) -> None:
+        with self.lock:
+            self.conn.execute(
+                """
+                INSERT INTO cursors (user_id, last_source_sweep) VALUES (?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET last_source_sweep = excluded.last_source_sweep
+                """,
+                (user_id, value),
+            )
+            self.conn.commit()
+
+    # ------------------------------------------------------- AI blocklist
+
+    def record_blocked(
+        self,
+        user_id: int,
+        month: str,
+        track_id: str,
+        name: str,
+        artist: str,
+        reason: str,
+    ) -> None:
+        with self.lock:
+            self.conn.execute(
+                """
+                INSERT OR IGNORE INTO discovery_blocked
+                    (user_id, month, track_id, name, artist, reason, blocked_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (user_id, month, track_id, name, artist, reason, now_seconds()),
+            )
+            self.conn.commit()
+
+    def is_seen_this_month(self, user_id: int, month: str, track_id: str) -> bool:
+        """Already archived or already blocked -- either way, don't reprocess it.
+
+        Blocked tracks count here so a filtered track doesn't cost an API lookup on
+        every single sweep for the rest of the month.
+        """
+        with self.lock:
+            row = self.conn.execute(
+                """
+                SELECT 1 FROM discovery_archive
+                 WHERE user_id = ? AND month = ? AND track_id = ?
+                UNION ALL
+                SELECT 1 FROM discovery_blocked
+                 WHERE user_id = ? AND month = ? AND track_id = ?
+                 LIMIT 1
+                """,
+                (user_id, month, track_id, user_id, month, track_id),
+            ).fetchone()
+        return row is not None
+
+    def blocked_month(self, user_id: int, month: str) -> list[dict[str, Any]]:
+        with self.lock:
+            rows = self.conn.execute(
+                """
+                SELECT track_id, name, artist, reason, blocked_at FROM discovery_blocked
+                WHERE user_id = ? AND month = ? ORDER BY blocked_at DESC
+                """,
+                (user_id, month),
             ).fetchall()
         return [dict(row) for row in rows]
 

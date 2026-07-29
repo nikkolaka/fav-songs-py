@@ -1,46 +1,66 @@
 """Monthly discovery archive.
 
-Spotify blocks reading algorithmic playlists: `GET /playlists/{id}/items` is
-owner/collaborator-only (403 otherwise), and since 2024-11-27 Spotify-owned and
-algorithmic playlists are off limits to any app that wasn't already in extended quota
-mode. So we cannot enumerate Discover Weekly's 30 tracks.
+The Web API cannot read Discover Weekly: `GET /playlists/{id}/items` is
+owner/collaborator-only and 403s otherwise, and since 2024-11-27 algorithmic and
+Spotify-owned playlists are closed to any app that wasn't already in extended quota
+mode. Confirmed against this account -- it returns 404.
 
-What we *can* see is `context.uri` on the playback object, which names the playlist a
-track is being played from even when that playlist's contents are unreadable. So the
-archive is built from what actually gets listened to.
+Spotify's own public embed page for the same playlist does serve it. That's the page
+that renders when you share a playlist link into Slack or a blog, it needs no auth, and
+it carries the full track list. So the archive reads that, and falls back to capturing
+whatever gets played from the playlist (`context.uri`, which stays visible even when the
+playlist behind it doesn't) if the page's shape ever changes.
 
-The trade-off, accepted deliberately: a week you don't listen archives nothing.
+Tracks by artists on the live AI blocklist are filtered out before anything is written.
 """
 
+import json
 import logging
-from datetime import datetime, timezone
+import re
+from datetime import datetime
 from typing import Any, Optional
 
+import requests
 import spotipy
 
 from . import playlists
+from .aiblocklist import AiBlocklist
 from .db import Database
 from .playlists import PlaylistCache
 
 log = logging.getLogger(__name__)
 
-PLAYLIST_DESCRIPTION = "Tracks discovered this month. Maintained automatically."
+EMBED_URL = "https://open.spotify.com/embed/playlist/{playlist_id}"
+OEMBED_URL = "https://open.spotify.com/oembed"
+EMBED_TIMEOUT = 25
+EMBED_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
+
+NEXT_DATA_RE = re.compile(
+    r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', re.S
+)
+
+PLAYLIST_DESCRIPTION = "Discoveries from this month. Maintained automatically."
+
+# Playlists we register as discovery sources without asking, because they are exactly
+# what this feature is for. Anything else needs one click from the user.
+AUTO_SOURCE_TITLES = {"discover weekly"}
+
+
+class EmbedUnavailable(Exception):
+    """The embed page didn't parse. Callers fall back to play-based capture."""
 
 
 def month_key(moment: Optional[datetime] = None) -> str:
-    """Stable sort/group key, e.g. '2026-01'."""
-    moment = moment or datetime.now()
-    return moment.strftime("%Y-%m")
+    """Stable sort/group key, e.g. '2026-07'."""
+    return (moment or datetime.now()).strftime("%Y-%m")
 
 
 def month_playlist_name(key: str) -> str:
-    """Display name for a month key, e.g. '2026-01' -> "January '26 Discovery"."""
-    parsed = datetime.strptime(key, "%Y-%m")
-    return f"{parsed.strftime('%B')} '{parsed.strftime('%y')} Discovery"
+    """'2026-07' -> "July's Discover"."""
+    return f"{datetime.strptime(key, '%Y-%m').strftime('%B')}'s Discover"
 
 
 def playlist_id_from_context(context: Optional[dict[str, Any]]) -> Optional[str]:
-    """Pull the playlist id out of a playback context, ignoring albums and artists."""
     uri = (context or {}).get("uri") or ""
     parts = uri.split(":")
     if len(parts) == 3 and parts[1] == "playlist" and parts[2]:
@@ -56,16 +76,79 @@ def playlist_id_from_link(value: str) -> Optional[str]:
     if value.startswith("spotify:"):
         return playlist_id_from_context({"uri": value})
     if "open.spotify.com" in value:
-        tail = value.split("playlist/", 1)[-1]
-        candidate = tail.split("?", 1)[0].split("/", 1)[0]
+        candidate = value.split("playlist/", 1)[-1].split("?", 1)[0].split("/", 1)[0]
         return candidate or None
     return value if value.isalnum() else None
 
 
+def playlist_title(playlist_id: str) -> Optional[str]:
+    """Playlist name via oEmbed -- a published link-preview endpoint, no auth needed.
+
+    Used to show a real name instead of a raw id, so nobody has to identify a playlist
+    by its 22-character hash.
+    """
+    try:
+        response = requests.get(
+            OEMBED_URL,
+            params={"url": f"https://open.spotify.com/playlist/{playlist_id}"},
+            timeout=EMBED_TIMEOUT,
+            headers={"User-Agent": EMBED_UA},
+        )
+        response.raise_for_status()
+        return str(response.json().get("title") or "") or None
+    except Exception as exc:
+        log.debug("oEmbed lookup failed for %s: %s", playlist_id, exc)
+        return None
+
+
+def read_playlist_embed(playlist_id: str) -> dict[str, Any]:
+    """Full track list from the public embed page. Raises EmbedUnavailable on any problem."""
+    try:
+        response = requests.get(
+            EMBED_URL.format(playlist_id=playlist_id),
+            timeout=EMBED_TIMEOUT,
+            headers={"User-Agent": EMBED_UA},
+        )
+        response.raise_for_status()
+    except Exception as exc:
+        raise EmbedUnavailable(f"fetch failed: {exc}") from exc
+
+    match = NEXT_DATA_RE.search(response.text)
+    if not match:
+        raise EmbedUnavailable("no __NEXT_DATA__ block on the page")
+
+    try:
+        entity = json.loads(match.group(1))["props"]["pageProps"]["state"]["data"]["entity"]
+        raw_tracks = entity["trackList"]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise EmbedUnavailable(f"unexpected page structure: {exc}") from exc
+
+    tracks = []
+    for item in raw_tracks:
+        uri = str((item or {}).get("uri") or "")
+        if not uri.startswith("spotify:track:"):
+            continue  # local files and episodes have no track id to add
+        tracks.append(
+            {
+                "track_id": uri.split(":")[-1],
+                "name": str(item.get("title") or "Unknown Track"),
+                "artist": str(item.get("subtitle") or "Unknown Artist"),
+            }
+        )
+
+    if not tracks:
+        raise EmbedUnavailable("page parsed but contained no tracks")
+
+    return {"name": str(entity.get("name") or ""), "tracks": tracks}
+
+
 class Discovery:
-    def __init__(self, db: Database, cache: PlaylistCache):
+    def __init__(self, db: Database, cache: PlaylistCache, blocklist: AiBlocklist):
         self.db = db
         self.cache = cache
+        self.blocklist = blocklist
+
+    # ------------------------------------------------------------- playlists
 
     def month_playlist(
         self, user_id: int, client: spotipy.Spotify, key: str, public: bool
@@ -83,6 +166,107 @@ class Discovery:
         self.db.set_discovery_playlist_id(user_id, key, playlist_id)
         return playlist_id
 
+    # -------------------------------------------------------------- blocking
+
+    def _artist_ids(self, client: spotipy.Spotify, track_id: str) -> list[str]:
+        """Artist ids for a track. The embed only gives names, and names aren't unique."""
+        try:
+            track = client.track(track_id)
+        except Exception as exc:
+            log.debug("Could not resolve artists for %s: %s", track_id, exc)
+            return []
+        return [a["id"] for a in (track.get("artists") or []) if a and a.get("id")]
+
+    def _blocked_reason(
+        self, client: spotipy.Spotify, track: dict[str, str]
+    ) -> Optional[str]:
+        """Why this track is blocked, or None. Fails open when the list isn't loaded."""
+        if not self.blocklist.loaded:
+            return None
+
+        artist_ids = self._artist_ids(client, track["track_id"])
+        if artist_ids:
+            hit = self.blocklist.blocks_artist_ids(artist_ids)
+            return f"AI artist {hit}" if hit else None
+
+        # Couldn't resolve ids -- fall back to the looser name check rather than
+        # letting an unresolvable track bypass the filter entirely.
+        hit = self.blocklist.blocks_artist_name(track["artist"])
+        return f"AI artist name {hit!r}" if hit else None
+
+    # ----------------------------------------------------------------- sweep
+
+    def sweep_sources(
+        self, user_id: int, client: spotipy.Spotify, settings: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Read every registered source and archive everything new this month."""
+        summary: dict[str, Any] = {"archived": 0, "blocked": 0, "errors": []}
+        if not settings.get("discovery_enabled"):
+            return summary
+
+        self.blocklist.refresh()
+        key = month_key()
+
+        for source in self.db.discovery_sources(user_id):
+            playlist_id = source["playlist_id"]
+            try:
+                data = read_playlist_embed(playlist_id)
+            except EmbedUnavailable as exc:
+                # Not fatal: play-based capture still runs on every poll.
+                log.warning("Embed read failed for %s: %s", playlist_id, exc)
+                summary["errors"].append({"playlist_id": playlist_id, "error": str(exc)})
+                self.db.set_source_degraded(user_id, playlist_id, str(exc))
+                continue
+
+            self.db.set_source_degraded(user_id, playlist_id, None)
+            fresh: list[dict[str, str]] = []
+
+            for track in data["tracks"]:
+                if self.db.is_seen_this_month(user_id, key, track["track_id"]):
+                    continue
+
+                reason = self._blocked_reason(client, track)
+                if reason:
+                    self.db.record_blocked(
+                        user_id, key, track["track_id"], track["name"], track["artist"], reason
+                    )
+                    summary["blocked"] += 1
+                    log.info("Blocked %s - %s (%s)", track["artist"], track["name"], reason)
+                    continue
+
+                if self.db.archive_discovery(
+                    user_id, key, track["track_id"], track["name"], track["artist"], playlist_id
+                ):
+                    fresh.append(track)
+
+            if not fresh:
+                continue
+
+            try:
+                month_id = self.month_playlist(
+                    user_id, client, key, bool(settings["playlist_public"])
+                )
+                playlists.add_tracks(
+                    client, month_id, [t["track_id"] for t in fresh], self.cache
+                )
+            except Exception:
+                # Keep the ledger honest so the next sweep retries these.
+                for track in fresh:
+                    self.db.unarchive_discovery(user_id, key, track["track_id"])
+                raise
+
+            summary["archived"] += len(fresh)
+            log.info(
+                "Archived %s track(s) from %r to %s",
+                len(fresh),
+                source["label"],
+                month_playlist_name(key),
+            )
+
+        return summary
+
+    # ------------------------------------------------- play-based fallback
+
     def capture(
         self,
         user_id: int,
@@ -92,8 +276,8 @@ class Discovery:
     ) -> Optional[dict[str, Any]]:
         """Archive the currently-playing track if it came from a discovery source.
 
-        Returns the archived track, or None. Assumes the caller has already ensured this
-        playback instance hasn't been handled yet.
+        The backstop for when the embed read is unavailable, and how unknown playlists
+        get noticed in the first place.
         """
         if not settings.get("discovery_enabled"):
             return None
@@ -104,12 +288,9 @@ class Discovery:
 
         track = playback.get("item") or {}
         track_id = track.get("id")
-        if not track_id:
-            return None
-
         duration_ms = int(track.get("duration_ms") or 0)
         progress_ms = int(playback.get("progress_ms") or 0)
-        if duration_ms <= 0:
+        if not track_id or duration_ms <= 0:
             return None
         if (progress_ms / duration_ms) < float(settings["min_completion_ratio"]):
             return None
@@ -122,12 +303,18 @@ class Discovery:
 
         known = {source["playlist_id"] for source in self.db.discovery_sources(user_id)}
         if source_id not in known:
-            # We can't read the playlist's name, but we can show the user which track
-            # they just heard from it and let them label it in one click.
-            self.db.note_seen_context(user_id, source_id, f"{artist} - {name}")
+            self.note_unknown_source(user_id, source_id, f"{artist} - {name}")
             return None
 
         key = month_key()
+        if self.db.is_seen_this_month(user_id, key, str(track_id)):
+            return None
+
+        reason = self._blocked_reason(client, {"track_id": str(track_id), "artist": artist})
+        if reason:
+            self.db.record_blocked(user_id, key, str(track_id), name, artist, reason)
+            return None
+
         if not self.db.archive_discovery(user_id, key, str(track_id), name, artist, source_id):
             return None
 
@@ -137,12 +324,21 @@ class Discovery:
             )
             playlists.add_tracks(client, playlist_id, [str(track_id)], self.cache)
         except Exception:
-            # Keep the ledger honest: if Spotify rejected the write, forget the row so
-            # the next play of this track retries instead of silently skipping forever.
             self.db.unarchive_discovery(user_id, key, str(track_id))
             raise
 
-        log.info(
-            "Archived %s - %s to %s (user %s)", artist, name, month_playlist_name(key), user_id
-        )
+        log.info("Captured %s - %s into %s", artist, name, month_playlist_name(key))
         return {"track_id": str(track_id), "name": name, "artist": artist, "month": key}
+
+    def note_unknown_source(self, user_id: int, playlist_id: str, sample: str) -> None:
+        """Record a playlist we've seen in playback, resolving its real name if we can.
+
+        Discover Weekly registers itself -- archiving it is the whole point of the
+        feature. Anything else waits for a click.
+        """
+        title = playlist_title(playlist_id)
+        if title and title.casefold() in AUTO_SOURCE_TITLES:
+            self.db.add_discovery_source(user_id, playlist_id, title)
+            log.info("Auto-registered %r (%s) as a discovery source", title, playlist_id)
+            return
+        self.db.note_seen_context(user_id, playlist_id, sample, title)

@@ -60,7 +60,10 @@
         <article>
           <header>
             <strong>Discovery</strong>
-            <span class="muted" id="discovery-month"></span>
+            <span>
+              <span class="muted" id="discovery-month"></span>
+              <button id="sweep-now" class="secondary outline">Sweep now</button>
+            </span>
           </header>
 
           <div id="context-prompt" hidden>
@@ -81,8 +84,24 @@
           <ul id="discovery-tracks"></ul>
 
           <footer>
+            <details id="blocked-details" hidden>
+              <summary>
+                Filtered as AI-generated (<span id="blocked-count">0</span>)
+              </summary>
+              <p>
+                <small class="muted">
+                  Matched by Spotify artist ID against
+                  <a href="https://github.com/CennoxX/spotify-ai-blocker" target="_blank"
+                     rel="noopener noreferrer">CennoxX/spotify-ai-blocker</a>,
+                  refreshed daily. Listed here so you can check nothing real was dropped.
+                </small>
+              </p>
+              <ul id="blocked-tracks"></ul>
+            </details>
+
             <details>
               <summary>Sources &amp; past months</summary>
+              <p><small class="muted" id="blocklist-status"></small></p>
               <ul id="discovery-sources"></ul>
               <form id="source-form">
                 <fieldset role="group">

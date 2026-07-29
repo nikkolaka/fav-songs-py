@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Red
 from pydantic import BaseModel, Field
 
 from . import discovery as discovery_mod
+from .aiblocklist import AiBlocklist
 from .config import MAX_USERS, OAUTH_STATE_TTL_SECONDS, SESSION_TTL_SECONDS, AppConfig
 from .db import Database, now_millis, now_seconds
 from .spotify import SpotifyAuthError, SpotifyService
@@ -26,12 +27,18 @@ WEB_DIR = os.path.join(os.path.dirname(__file__), "web")
 config = AppConfig.from_env()
 database = Database(config.db_path, config.fernet_key, config.default_playlist_name)
 spotify_service = SpotifyService(config, database)
-trackers = TrackerManager(database, spotify_service)
+blocklist = AiBlocklist(
+    os.path.join(os.path.dirname(config.db_path) or ".", "ai-artists.csv")
+)
+trackers = TrackerManager(database, spotify_service, blocklist)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     database.prune_plays()
+    # Don't let a GitHub outage delay startup; the cached copy carries us until the
+    # tracker's next sweep refreshes it.
+    await asyncio.to_thread(blocklist.refresh)
     await trackers.start_all()
     yield
     await trackers.stop_all()
@@ -170,9 +177,12 @@ def build_state(user_id: Optional[int]) -> dict[str, Any]:
             "month": month,
             "month_name": discovery_mod.month_playlist_name(month),
             "tracks": database.discovery_month(user_id, month),
+            "blocked": database.blocked_month(user_id, month),
             "months": months,
             "sources": database.discovery_sources(user_id),
             "unlabelled": database.unlabelled_contexts(user_id),
+            "last_sweep": tracker.last_sweep,
+            "blocklist": blocklist.status(),
         },
     }
 
@@ -383,6 +393,20 @@ async def label_context(
     """Promote a playlist we've seen in playback but can't name into a discovery source."""
     database.add_discovery_source(user_id, playlist_id, payload.label.strip())
     return {"sources": database.discovery_sources(user_id)}
+
+
+@app.post("/api/discovery/sweep")
+async def sweep_now(user_id: int = Depends(current_user_id)) -> dict[str, Any]:
+    """Read every source immediately instead of waiting for the next scheduled sweep."""
+    tracker = trackers.get(user_id)
+
+    def work() -> dict[str, Any]:
+        return tracker.sweep_sources(spotify_service.client(user_id))
+
+    try:
+        return await asyncio.to_thread(work)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Sweep failed: {exc}") from exc
 
 
 @app.delete("/api/discovery/contexts/{playlist_id}")
