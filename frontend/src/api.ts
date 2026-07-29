@@ -1,4 +1,4 @@
-import type { AppState, HistoryPage, HistorySummary } from "@/types"
+import type { AppState, HistoryPage, HistorySummary, StatsPayload } from "@/types"
 
 const POLL_MS = 5000
 
@@ -56,4 +56,14 @@ export function pollState(cb: (state: AppState) => void): () => void {
   }
   tick()
   return () => { active = false }
+}
+
+export async function fetchStats(): Promise<StatsPayload> {
+  const res = await fetch("/api/stats")
+  if (!res.ok) throw new Error("Failed to fetch stats")
+  return res.json()
+}
+
+export async function togglePin(statId: string): Promise<{ pinned_stats: string[] }> {
+  return post("/api/stats/toggle-pin", { stat_id: statId })
 }

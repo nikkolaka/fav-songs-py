@@ -7,6 +7,7 @@ rather than OFFSET, FTS5 rather than LIKE -- so a decade of plays costs the same
 page as a week of them.
 """
 
+import json
 import logging
 import os
 import re
@@ -236,11 +237,14 @@ SETTINGS_COLUMNS = (
     "favorites_playlist_id",
     "discovery_enabled",
     "tracker_running",
+    "pinned_stats",
 )
 
 BOOLEAN_SETTINGS = frozenset(
     {"playlist_public", "auto_add_enabled", "discovery_enabled", "tracker_running"}
 )
+
+JSON_SETTINGS = frozenset({"pinned_stats"})
 
 
 def now_seconds() -> int:
@@ -311,6 +315,7 @@ class Database:
             ("discovery_sources", "degraded", "TEXT"),
             ("seen_contexts", "title", "TEXT"),
             ("cursors", "last_source_sweep", "INTEGER NOT NULL DEFAULT 0"),
+            ("settings", "pinned_stats", "TEXT NOT NULL DEFAULT '[]'"),
         )
         for table, column, ddl in additions:
             if column not in self._columns(table):
@@ -554,6 +559,11 @@ class Database:
         data = dict(row)
         for key in BOOLEAN_SETTINGS:
             data[key] = bool(data[key])
+        for key in JSON_SETTINGS:
+            try:
+                data[key] = json.loads(data[key])
+            except (json.JSONDecodeError, TypeError):
+                data[key] = []
         return data
 
     def update_settings(self, user_id: int, updates: dict[str, Any]) -> dict[str, Any]:
@@ -563,6 +573,8 @@ class Database:
                 continue
             if key in BOOLEAN_SETTINGS:
                 value = 1 if value else 0
+            elif key in JSON_SETTINGS:
+                value = json.dumps(value)
             parts.append(f"{key} = ?")
             values.append(value)
 
@@ -855,6 +867,237 @@ class Database:
                 (user_id, threshold),
             ).fetchone()
         return dict(row) if row else None
+
+    def _distinct_days(self, user_id: int) -> list[str]:
+        with self.lock:
+            rows = self.conn.execute(
+                """
+                SELECT DISTINCT DATE(played_at / 1000, 'unixepoch', 'localtime') AS day
+                  FROM listens WHERE user_id = ? AND is_open = 0
+                 ORDER BY day DESC
+                """,
+                (user_id,),
+            ).fetchall()
+        return [row["day"] for row in rows]
+
+    @staticmethod
+    def _compute_streaks(days: list[str]) -> tuple[int, int]:
+        if not days:
+            return 0, 0
+
+        from datetime import date, timedelta
+
+        today = date.today().isoformat()
+        dates = {date.fromisoformat(d) for d in days}
+        min_date = min(dates)
+
+        current = 0
+        d = date.today()
+        while d >= min_date:
+            if d in dates:
+                current += 1
+                d -= timedelta(days=1)
+            else:
+                break
+
+        longest = 0
+        run = 0
+        all_dates = sorted(dates, reverse=True)
+        prev: Optional[date] = None
+        for d in all_dates:
+            if prev is not None and (prev - d).days == 1:
+                run += 1
+            else:
+                run = 1
+            longest = max(longest, run)
+            prev = d
+
+        return current, longest
+
+    def get_all_stats(self, user_id: int, threshold: int) -> dict[str, Any]:
+        with self.lock:
+            # Counted in 24h
+            row_24h = self.conn.execute(
+                """
+                SELECT COUNT(*) AS total, COALESCE(SUM(qualified), 0) AS qualified
+                  FROM listens WHERE user_id = ? AND played_at >= ?
+                """,
+                (user_id, now_millis() - 86_400_000),
+            ).fetchone()
+
+            # Total listens + listening time + avg completion
+            row_listens = self.conn.execute(
+                """
+                SELECT COUNT(*) AS total,
+                       COALESCE(SUM(listened_ms), 0) AS total_ms,
+                       COALESCE(AVG(completion_ratio), 0) AS avg_completion
+                  FROM listens WHERE user_id = ? AND is_open = 0
+                """,
+                (user_id,),
+            ).fetchone()
+
+            # Tracks seen
+            row_tracks = self.conn.execute(
+                "SELECT COUNT(*) AS n FROM play_counts WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+
+            # Favorites count
+            row_favs = self.conn.execute(
+                """
+                SELECT COUNT(*) AS n FROM play_counts
+                 WHERE user_id = ? AND qualified_plays >= ?
+                """,
+                (user_id, threshold),
+            ).fetchone()
+
+            # Top artist
+            row_artist = self.conn.execute(
+                """
+                SELECT artist, SUM(qualified_plays) AS plays
+                  FROM play_counts WHERE user_id = ?
+                 GROUP BY artist ORDER BY plays DESC LIMIT 1
+                """,
+                (user_id,),
+            ).fetchone()
+
+            # Next favorite
+            row_next = self.conn.execute(
+                """
+                SELECT track_id, name, artist, qualified_plays
+                  FROM play_counts
+                 WHERE user_id = ? AND qualified_plays < ?
+                 ORDER BY qualified_plays DESC, last_played DESC
+                 LIMIT 1
+                """,
+                (user_id, threshold),
+            ).fetchone()
+
+            # Peak hour
+            row_hour = self.conn.execute(
+                """
+                SELECT CAST(STRFTIME('%H', played_at / 1000, 'unixepoch', 'localtime') AS INTEGER) AS h,
+                       COUNT(*) AS n
+                  FROM listens WHERE user_id = ?
+                 GROUP BY h ORDER BY n DESC LIMIT 1
+                """,
+                (user_id,),
+            ).fetchone()
+
+            # Avg daily hours, last 7 days
+            row_avg = self.conn.execute(
+                """
+                SELECT COALESCE(SUM(listened_ms) / 7.0 / 3600000.0, 0) AS avg_hrs
+                  FROM listens WHERE user_id = ? AND is_open = 0
+                   AND played_at >= ?
+                """,
+                (user_id, now_millis() - 7 * 86_400_000),
+            ).fetchone()
+
+        # Streaks (outside lock b/c it uses distinct_days which acquires its own)
+        days = self._distinct_days(user_id)
+        current_streak, longest_streak = self._compute_streaks(days)
+
+        total_ms = int(row_listens["total_ms"]) if row_listens else 0
+        hours = total_ms // 3_600_000
+        mins = (total_ms % 3_600_000) // 60_000
+
+        result: list[dict[str, Any]] = []
+
+        total_24h = int(row_24h["total"])
+        qualified_24h = int(row_24h["qualified"])
+        result.append({
+            "id": "counted_24h",
+            "label": "Counted Today",
+            "value": str(qualified_24h),
+            "subtitle": f"of {total_24h} played in last 24h",
+        })
+
+        tracks_n = int(row_tracks["n"])
+        total_listens_n = int(row_listens["total"]) if row_listens else 0
+        result.append({
+            "id": "tracks_seen",
+            "label": "Tracks Heard",
+            "value": str(tracks_n),
+            "subtitle": f"{total_listens_n:,} total plays",
+        })
+
+        if row_next:
+            result.append({
+                "id": "next_favorite",
+                "label": "Next Favorite",
+                "value": str(row_next["name"]),
+                "subtitle": f"{threshold - int(row_next['qualified_plays'])} plays to go",
+            })
+
+        result.append({
+            "id": "total_listens",
+            "label": "All-Time Plays",
+            "value": f"{total_listens_n:,}",
+            "subtitle": "",
+        })
+
+        result.append({
+            "id": "listening_time",
+            "label": "Listening Time",
+            "value": f"{hours}h {mins}m",
+            "subtitle": "total tracked",
+        })
+
+        result.append({
+            "id": "favorites_count",
+            "label": "Favorites",
+            "value": str(int(row_favs["n"])),
+            "subtitle": "tracks over threshold",
+        })
+
+        if row_artist:
+            result.append({
+                "id": "top_artist",
+                "label": "Top Artist",
+                "value": str(row_artist["artist"]),
+                "subtitle": f"{int(row_artist['plays'])} counted plays",
+            })
+
+        result.append({
+            "id": "current_streak",
+            "label": "Current Streak",
+            "value": f"{current_streak} day{'s' if current_streak != 1 else ''}",
+            "subtitle": "consecutive days with a listen",
+        })
+
+        result.append({
+            "id": "longest_streak",
+            "label": "Longest Streak",
+            "value": f"{longest_streak} day{'s' if longest_streak != 1 else ''}",
+            "subtitle": "all-time best",
+        })
+
+        if row_hour:
+            result.append({
+                "id": "peak_hour",
+                "label": "Peak Hour",
+                "value": f"{int(row_hour['h'])}:00",
+                "subtitle": "most active hour",
+            })
+
+        avg_pct = round((float(row_listens["avg_completion"]) if row_listens else 0) * 100)
+        result.append({
+            "id": "avg_completion",
+            "label": "Avg Completion",
+            "value": f"{avg_pct}%",
+            "subtitle": "mean listen-through",
+        })
+
+        avg_hrs = round(float(row_avg["avg_hrs"]) if row_avg else 0, 1)
+        result.append({
+            "id": "avg_daily_last_week",
+            "label": "Daily Avg (7d)",
+            "value": f"{avg_hrs}h",
+            "subtitle": "average daily listening, last week",
+        })
+
+        return result
 
     # ------------------------------------------------------------- discovery
 

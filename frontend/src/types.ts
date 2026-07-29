@@ -19,6 +19,7 @@ export interface Settings {
   auto_add_enabled: boolean
   discovery_enabled: boolean
   favorites_playlist_id: string | null
+  pinned_stats: string[]
 }
 
 export interface Stats {
@@ -124,4 +125,16 @@ export interface HistorySummary {
   qualified: number
   tracks: number
   first_played: string
+}
+
+export interface StatCardData {
+  id: string
+  label: string
+  value: string
+  subtitle: string
+}
+
+export interface StatsPayload {
+  stats: StatCardData[]
+  pinned_stats: string[]
 }

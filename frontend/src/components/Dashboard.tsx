@@ -3,8 +3,10 @@ import type { AppState } from "@/types"
 import { post } from "@/api"
 import { Button } from "@/components/ui/button"
 import { NowPlayingCard } from "@/components/NowPlayingCard"
+import { PinnedStatsBar } from "@/components/PinnedStatsBar"
 import { FavouritesSection } from "@/components/FavouritesSection"
 import { HistorySection } from "@/components/HistorySection"
+import { StatisticsSection } from "@/components/StatisticsSection"
 import { DiscoverySection } from "@/components/DiscoverySection"
 import { SettingsSection } from "@/components/SettingsSection"
 
@@ -43,7 +45,8 @@ export function Dashboard({ state, onRefresh }: Props) {
     })
   }
 
-  const { user, tracker_running: trackerRunning, now_playing, stats, favorites, discovery, settings } = state
+  const { user, tracker_running: trackerRunning, now_playing, favorites, discovery, settings } = state
+  const pinned = (settings.pinned_stats ?? []) as string[]
 
   return (
     <div className="min-h-screen">
@@ -65,6 +68,7 @@ export function Dashboard({ state, onRefresh }: Props) {
               size="sm"
               className="h-7 text-xs"
               onClick={toggleTracker}
+              aria-label={trackerRunning ? "Stop tracker" : "Start tracker"}
             >
               {trackerRunning ? "Stop" : "Start"}
             </Button>
@@ -89,11 +93,13 @@ export function Dashboard({ state, onRefresh }: Props) {
           </div>
         )}
 
-        <NowPlayingCard
-          now={now_playing}
-          stats={stats}
-          settings={settings}
-          favorites={favorites}
+        <NowPlayingCard now={now_playing} />
+
+        <PinnedStatsBar pinnedStats={pinned} />
+
+        <StatisticsSection
+          pinnedStats={pinned}
+          onPinsChanged={onRefresh}
         />
 
         <FavouritesSection favorites={favorites} act={act} />

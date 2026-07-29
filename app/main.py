@@ -149,6 +149,7 @@ class SettingsUpdate(BaseModel):
     playlist_public: Optional[bool] = None
     auto_add_enabled: Optional[bool] = None
     discovery_enabled: Optional[bool] = None
+    pinned_stats: Optional[list[str]] = None
 
 
 class TrackSelection(BaseModel):
@@ -162,6 +163,10 @@ class DiscoverySourceInput(BaseModel):
 
 class ContextLabel(BaseModel):
     label: str = Field(min_length=1, max_length=60)
+
+
+class TogglePinRequest(BaseModel):
+    stat_id: str = Field(min_length=1, max_length=64)
 
 
 # -------------------------------------------------------------------- state
@@ -338,6 +343,34 @@ async def api_history_summary(user_id: int = Depends(current_user_id)) -> dict[s
     if user_id == 0:
         return demo_mod.demo_history_summary()
     return await asyncio.to_thread(database.history_summary, user_id)
+
+
+@app.get("/api/stats")
+async def api_stats(user_id: int = Depends(current_user_id)) -> dict[str, Any]:
+    if user_id == 0:
+        return {"stats": [], "pinned_stats": []}
+    settings = database.settings(user_id)
+    threshold = int(settings["favorite_threshold"])
+    return {
+        "stats": await asyncio.to_thread(database.get_all_stats, user_id, threshold),
+        "pinned_stats": settings.get("pinned_stats", []),
+    }
+
+
+@app.post("/api/stats/toggle-pin")
+async def api_stats_toggle_pin(
+    payload: TogglePinRequest,
+    user_id: int = Depends(current_user_id),
+) -> dict[str, Any]:
+    settings = database.settings(user_id)
+    pinned: list[str] = list(settings.get("pinned_stats", []))
+    stat_id = payload.stat_id
+    if stat_id in pinned:
+        pinned.remove(stat_id)
+    else:
+        pinned.append(stat_id)
+    database.update_settings(user_id, {"pinned_stats": pinned})
+    return {"pinned_stats": pinned}
 
 
 @app.post("/api/auth/start")

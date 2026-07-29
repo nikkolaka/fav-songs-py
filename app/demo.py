@@ -33,6 +33,7 @@ def demo_state() -> dict:
             "auto_add_enabled": True,
             "discovery_enabled": True,
             "favorites_playlist_id": "demo-playlist",
+            "pinned_stats": [],
         },
         "stats": {
             "last_24h": {"total": 34, "qualified": 27},
