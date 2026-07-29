@@ -23,7 +23,8 @@ SCOPES = (
 )
 
 # Spotify Development Mode allows at most five authorised users per app.
-MAX_USERS = 5
+# Extensions raise this to 25; make it configurable.
+MAX_USERS = int(os.getenv("FAVSONGS_MAX_USERS", "5"))
 
 SESSION_TTL_SECONDS = 30 * 24 * 3600
 OAUTH_STATE_TTL_SECONDS = 600
@@ -46,8 +47,13 @@ class AppConfig:
 
     @property
     def fernet_key(self) -> bytes:
-        """Key for encrypting refresh tokens at rest, derived from the session secret."""
-        digest = hashlib.sha256(self.session_secret.encode("utf-8")).digest()
+        """Key for encrypting refresh tokens at rest.
+
+        Prefers a dedicated TOKEN_ENCRYPTION_KEY env var. Falls back to deriving from
+        SESSION_SECRET for backwards compatibility.
+        """
+        raw = os.getenv("TOKEN_ENCRYPTION_KEY", self.session_secret)
+        digest = hashlib.sha256(raw.encode("utf-8")).digest()
         return base64.urlsafe_b64encode(digest)
 
     @classmethod

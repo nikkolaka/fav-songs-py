@@ -20,7 +20,7 @@ import requests
 
 log = logging.getLogger(__name__)
 
-CSV_URL = "https://raw.githubusercontent.com/CennoxX/spotify-ai-blocker/main/SpotifyAiArtists.csv"
+CSV_URL = "https://raw.githubusercontent.com/CennoxX/spotify-ai-blocker/bca57bfd69b2ef12a4cf9ca3d7cd0c5907317f21/SpotifyAiArtists.csv"
 REFRESH_SECONDS = 86_400
 FETCH_TIMEOUT = 30
 

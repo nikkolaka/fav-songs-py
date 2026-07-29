@@ -93,9 +93,7 @@ export function Dashboard({ state, onRefresh }: Props) {
           now={now_playing}
           stats={stats}
           settings={settings}
-          trackerRunning={trackerRunning}
           favorites={favorites}
-          onToggleTracker={toggleTracker}
         />
 
         <FavouritesSection favorites={favorites} act={act} />

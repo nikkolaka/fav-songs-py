@@ -283,14 +283,24 @@ class UserTracker:
             )
             log.warning("Source sweep failed for user %s: %s", self.user_id, exc)
 
-    def _live_poll(self, client: spotipy.Spotify) -> bool:
+    def _live_poll(self, client: spotipy.Spotify) -> Optional[bool]:
         """Measure playback, refresh now-playing, run discovery capture.
 
-        Returns True if something is playing.
+        Returns True if something is playing, False if idle, None if we couldn't tell
+        and should retry without changing any state.
         """
-        playback = client.current_playback()
+        try:
+            playback = client.current_playback()
+        except Exception:
+            log.debug("current_playback failed for user %s; skipping poll", self.user_id)
+            return None
         settings = self.db.settings(self.user_id)
         obs = listens.observation_from_playback(playback, now_millis())
+
+        if obs is None and self.session is not None and playback is not None:
+            # Spotify returned a playback object with no track -- e.g. a private session
+            # or a brief gap between tracks. Close the current session.
+            obs = None
 
         self._measure(obs, settings, client)
         self.now_playing = format_now_playing(
@@ -347,7 +357,9 @@ class UserTracker:
 
     async def _cycle(self) -> None:
         client = await asyncio.to_thread(self.spotify.client, self.user_id)
-        await asyncio.to_thread(self._live_poll, client)
+        active = await asyncio.to_thread(self._live_poll, client)
+        if active is None:
+            return  # couldn't reach Spotify; retry on next cycle
         # One Spotify read per cycle at most: the playlist membership behind this is
         # cached for 30s, so a 5-second poll doesn't turn into a 5-second playlist read.
         await asyncio.to_thread(self.refresh_favorites, client)

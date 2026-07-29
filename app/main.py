@@ -4,13 +4,15 @@ import asyncio
 import logging
 import os
 import secrets
+import time
 from contextlib import asynccontextmanager
 from typing import Any, Optional
 
-from fastapi import Cookie, Depends, FastAPI, HTTPException
+from fastapi import Cookie, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from . import discovery as discovery_mod
 from . import demo as demo_mod
@@ -57,6 +59,48 @@ app = FastAPI(
 )
 
 
+# --------------------------------------------------------- security middleware
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        return response
+
+
+app.add_middleware(SecurityHeadersMiddleware)
+
+# Simple in-memory rate limiter: allow at most `limit` requests per `window` seconds
+# to paths with a given prefix. Shared across users, least-effort flood protection.
+_rate_state: dict[str, list[float]] = {}
+_RATE_WINDOW = 60
+_RATE_LIMIT = 30
+
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        for prefix, limit, window in [("/api/auth/", _RATE_LIMIT, _RATE_WINDOW)]:
+            if request.url.path.startswith(prefix):
+                key = f"rate:{prefix}"
+                now = time.time()
+                _rate_state.setdefault(key, [])
+                _rate_state[key] = [t for t in _rate_state[key] if now - t < window]
+                if len(_rate_state[key]) >= limit:
+                    return JSONResponse(
+                        status_code=429,
+                        content={"detail": "Too many requests. Slow down."},
+                    )
+                _rate_state[key].append(now)
+        return await call_next(request)
+
+
+app.add_middleware(RateLimitMiddleware)
+
+
 # ------------------------------------------------------------------ session
 
 
@@ -64,9 +108,13 @@ def current_user_id(
     favsongs_session: Optional[str] = Cookie(default=None),
 ) -> int:
     user_id = database.session_user_id(favsongs_session) if favsongs_session else None
-    if user_id is None and not (config.dev_mode and favsongs_session == "demo"):
+    if user_id is None and config.dev_mode:
+        # Dev mode allows local development without Spotify. Only active when
+        # FAVSONGS_DEV_MODE is explicitly set — must never reach production.
+        return 0
+    if user_id is None:
         raise HTTPException(status_code=401, detail="Log in with Spotify first")
-    return user_id or 0
+    return user_id
 
 
 def optional_user_id(favsongs_session: Optional[str] = Cookie(default=None)) -> Optional[int]:
@@ -465,6 +513,9 @@ async def label_context(
 @app.post("/api/discovery/sweep")
 async def sweep_now(user_id: int = Depends(current_user_id)) -> dict[str, Any]:
     """Read every source immediately instead of waiting for the next scheduled sweep."""
+    if user_id == 0:
+        # In dev mode, return a mock result to keep the demo flow working.
+        return {"archived": 0, "blocked": 0, "errors": []}
     tracker = trackers.get(user_id)
 
     def work() -> dict[str, Any]:
@@ -473,7 +524,8 @@ async def sweep_now(user_id: int = Depends(current_user_id)) -> dict[str, Any]:
     try:
         return await asyncio.to_thread(work)
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Sweep failed: {exc}") from exc
+        log.error("Sweep failed for user %s: %s", user_id, exc)
+        raise HTTPException(status_code=502, detail="Sweep failed; check the logs.") from exc
 
 
 @app.delete("/api/discovery/contexts/{playlist_id}")

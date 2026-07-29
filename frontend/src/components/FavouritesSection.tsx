@@ -78,6 +78,7 @@ export function FavouritesSection({ favorites, act }: Props) {
                 <TableHead>Track</TableHead>
                 <TableHead>Artist</TableHead>
                 <TableHead className="text-right">Counted</TableHead>
+                <TableHead className="text-right">Total</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -100,6 +101,9 @@ export function FavouritesSection({ favorites, act }: Props) {
                         <span className="ml-1 text-xs text-muted-foreground/50">pending</span>
                       </span>
                     )}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums text-muted-foreground text-sm">
+                    {f.total_plays}
                   </TableCell>
                 </TableRow>
               ))}

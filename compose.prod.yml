@@ -6,11 +6,9 @@ services:
       CLIENT_SECRET: ${CLIENT_SECRET}
       REDIRECT_URI: ${REDIRECT_URI}
       SESSION_SECRET: ${SESSION_SECRET}
-      COOKIE_SECURE: ${COOKIE_SECURE:-0}
+      COOKIE_SECURE: ${COOKIE_SECURE:-1}
       DEFAULT_PLAYLIST_NAME: ${DEFAULT_PLAYLIST_NAME:-Favourite Songs}
       FAVSONGS_DB_PATH: /app/data/favsongs.db
-    ports:
-      - ${APP_PORT:-8090}:8000
     volumes:
       - ./data:/app/data
     restart: unless-stopped
