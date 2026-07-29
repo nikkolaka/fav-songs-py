@@ -16,6 +16,7 @@ interface Props {
 }
 
 export function SettingsSection({ settings, act, onNotify }: Props) {
+  const [open, setOpen] = useState(false)
   const [ratio, setRatio] = useState(settings.min_completion_ratio)
   const [threshold, setThreshold] = useState(settings.favorite_threshold)
   const [name, setName] = useState(settings.playlist_name)
@@ -51,10 +52,11 @@ export function SettingsSection({ settings, act, onNotify }: Props) {
   }
 
   return (
-    <Collapsible>
+    <Collapsible open={open} onOpenChange={setOpen}>
       <Card className="p-4">
-        <CollapsibleTrigger className="flex w-full items-center hover:opacity-80">
+        <CollapsibleTrigger className="flex w-full items-center justify-between hover:opacity-80">
           <h3 className="font-semibold text-sm">Settings</h3>
+          <span className="text-xs text-muted-foreground">{open ? "Hide" : "Show"}</span>
         </CollapsibleTrigger>
 
         <CollapsibleContent className="mt-3 space-y-4">

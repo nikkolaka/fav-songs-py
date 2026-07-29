@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import discovery as discovery_mod
+from . import demo as demo_mod
 from .aiblocklist import AiBlocklist
 from .config import MAX_USERS, OAUTH_STATE_TTL_SECONDS, SESSION_TTL_SECONDS, AppConfig
 from .db import Database, now_millis, now_seconds
@@ -63,13 +64,16 @@ def current_user_id(
     favsongs_session: Optional[str] = Cookie(default=None),
 ) -> int:
     user_id = database.session_user_id(favsongs_session) if favsongs_session else None
-    if user_id is None:
+    if user_id is None and not (config.dev_mode and favsongs_session == "demo"):
         raise HTTPException(status_code=401, detail="Log in with Spotify first")
-    return user_id
+    return user_id or 0
 
 
 def optional_user_id(favsongs_session: Optional[str] = Cookie(default=None)) -> Optional[int]:
-    return database.session_user_id(favsongs_session) if favsongs_session else None
+    user_id = database.session_user_id(favsongs_session) if favsongs_session else None
+    if user_id is None and config.dev_mode:
+        return 0
+    return user_id
 
 
 def set_session_cookie(response: Any, token: str) -> None:
@@ -118,6 +122,8 @@ class ContextLabel(BaseModel):
 def build_state(user_id: Optional[int]) -> dict[str, Any]:
     if user_id is None:
         return {"connected": False}
+    if user_id == 0:
+        return demo_mod.demo_state()
 
     user = database.user(user_id)
     if not user:
@@ -261,6 +267,12 @@ async def api_history(
     `start`/`end` are epoch milliseconds -- the browser converts the dates someone picks
     from its own timezone, so a day means their day rather than UTC's.
     """
+    if user_id == 0:
+        return await asyncio.to_thread(
+            demo_mod.demo_history,
+            query=q, start=start, end=end, qualified=qualified,
+            cursor=parse_cursor(cursor), limit=limit,
+        )
     return await asyncio.to_thread(
         database.history,
         user_id,
@@ -275,6 +287,8 @@ async def api_history(
 
 @app.get("/api/history/summary")
 async def api_history_summary(user_id: int = Depends(current_user_id)) -> dict[str, Any]:
+    if user_id == 0:
+        return demo_mod.demo_history_summary()
     return await asyncio.to_thread(database.history_summary, user_id)
 
 

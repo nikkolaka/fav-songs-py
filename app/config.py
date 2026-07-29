@@ -38,6 +38,7 @@ class AppConfig:
     default_playlist_name: str
     session_secret: str
     cookie_secure: bool
+    dev_mode: bool = False
 
     @property
     def scope(self) -> str:
@@ -70,5 +71,7 @@ class AppConfig:
             ),
             session_secret=os.environ["SESSION_SECRET"],
             cookie_secure=os.getenv("COOKIE_SECURE", "0").strip().lower()
+            in {"1", "true", "yes"},
+            dev_mode=os.getenv("FAVSONGS_DEV_MODE", "").strip().lower()
             in {"1", "true", "yes"},
         )

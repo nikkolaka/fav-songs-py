@@ -1,3 +1,4 @@
+import { useState } from "react"
 import type { Discovery } from "@/types"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -21,6 +22,7 @@ function ago(ms: number) {
 }
 
 export function DiscoverySection({ discovery, act }: Props) {
+  const [open, setOpen] = useState(false)
   async function sweep() {
     await act(async () => {
       const res = await fetch("/api/discovery/sweep", { method: "POST" })
@@ -50,10 +52,11 @@ export function DiscoverySection({ discovery, act }: Props) {
   }
 
   return (
-    <Collapsible>
+    <Collapsible open={open} onOpenChange={setOpen}>
       <Card className="p-4">
         <CollapsibleTrigger className="flex w-full items-center justify-between hover:opacity-80">
           <h3 className="font-semibold text-sm">{discovery.month_name}</h3>
+          <span className="text-xs text-muted-foreground">{open ? "Hide" : "Show"}</span>
         </CollapsibleTrigger>
 
         <CollapsibleContent className="mt-3 space-y-3">

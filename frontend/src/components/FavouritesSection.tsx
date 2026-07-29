@@ -7,6 +7,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table"
 import { Separator } from "@/components/ui/separator"
+import { Badge } from "@/components/ui/badge"
 
 interface Props {
   favorites: Favorite[]
@@ -77,8 +78,6 @@ export function FavouritesSection({ favorites, act }: Props) {
                 <TableHead>Track</TableHead>
                 <TableHead>Artist</TableHead>
                 <TableHead className="text-right">Counted</TableHead>
-                <TableHead className="text-right">Played</TableHead>
-                <TableHead>In playlist</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -92,15 +91,14 @@ export function FavouritesSection({ favorites, act }: Props) {
                   </TableCell>
                   <TableCell className="font-medium">{f.name}</TableCell>
                   <TableCell className="text-muted-foreground">{f.artist}</TableCell>
-                  <TableCell className="text-right tabular-nums">{f.qualified_plays}</TableCell>
-                  <TableCell className="text-right tabular-nums text-muted-foreground">
-                    {f.total_plays}
-                  </TableCell>
-                  <TableCell>
+                  <TableCell className="text-right tabular-nums">
                     {f.in_playlist ? (
-                      <span className="text-xs text-emerald-500">yes</span>
+                      f.qualified_plays
                     ) : (
-                      <span className="text-xs text-muted-foreground">no</span>
+                      <span className="text-muted-foreground">
+                        {f.qualified_plays}
+                        <span className="ml-1 text-xs text-muted-foreground/50">pending</span>
+                      </span>
                     )}
                   </TableCell>
                 </TableRow>
