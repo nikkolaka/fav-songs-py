@@ -105,7 +105,6 @@ def test_paging_walks_every_row_exactly_once(db, user_id):
         cursor = page["next_cursor"]
         if not cursor:
             break
-        cursor = tuple(int(part) for part in cursor.split("_"))
 
     assert len(seen) == 50
     assert len(set(seen)) == 50
@@ -117,8 +116,7 @@ def test_rows_sharing_a_timestamp_still_page_cleanly(db, user_id):
         add(db, user_id, f"t{i}", f"Song {i}", "Artist", BASE)
 
     page = db.history(user_id, limit=3)
-    cursor = tuple(int(part) for part in page["next_cursor"].split("_"))
-    rest = db.history(user_id, limit=10, cursor=cursor)
+    rest = db.history(user_id, limit=10, cursor=page["next_cursor"])
 
     ids = [row["id"] for row in page["items"]] + [row["id"] for row in rest["items"]]
     assert sorted(ids) == sorted(row["id"] for row in db.history(user_id, limit=100)["items"])
