@@ -257,7 +257,7 @@ def test_a_broken_embed_records_the_error_without_killing_the_sweep(
     tracker, spotify, db, user_id, monkeypatch
 ):
     db.add_discovery_source(user_id, "broken", "Discover Weekly")
-    db.add_discovery_source(user_id, "working", "Release Radar")
+    db.add_discovery_source(user_id, "working", "Discover Weekly")
 
     def reader(playlist_id):
         if playlist_id == "broken":
