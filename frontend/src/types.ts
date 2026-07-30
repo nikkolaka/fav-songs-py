@@ -70,14 +70,6 @@ export interface DiscoverySource {
   degraded: string | null
 }
 
-export interface UnlabelledContext {
-  playlist_id: string
-  sample_track: string
-  title: string | null
-  play_count: number
-  last_seen: string
-}
-
 export interface Discovery {
   month: string
   month_name: string
@@ -85,7 +77,6 @@ export interface Discovery {
   blocked: DiscoveryBlocked[]
   months: DiscoveryMonth[]
   sources: DiscoverySource[]
-  unlabelled: UnlabelledContext[]
   blocklist: {
     artists: number | null
     fetched_at: number | null

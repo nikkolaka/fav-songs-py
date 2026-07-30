@@ -51,51 +51,6 @@ export function DiscoverySection({ discovery, act }: Props) {
         <CollapsibleContent className="mt-3 space-y-3">
           <Separator />
 
-          {/* Unlabelled contexts */}
-          {discovery.unlabelled.length > 0 && (
-            <div className="space-y-2 rounded-md border p-3">
-              <p className="text-xs text-muted-foreground">
-                You listened to a track from an unknown playlist. Tell us what it is:
-              </p>
-              {discovery.unlabelled.map((ctx) => (
-                <div key={ctx.playlist_id} className="flex flex-col sm:flex-row items-start sm:items-center gap-2 text-xs">
-                  <span className="flex-1">
-                    <strong>{ctx.title || ctx.sample_track}</strong>
-                    <span className="text-muted-foreground"> · {ctx.play_count} plays</span>
-                  </span>
-                  <span className="flex gap-2 self-stretch sm:self-auto">
-                  <Button
-                    size="sm"
-                    variant="default"
-                    className="h-8 text-xs flex-1 sm:flex-none"
-                    onClick={() => act(() =>
-                      fetch(`/api/discovery/contexts/${encodeURIComponent(ctx.playlist_id)}`, {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ label: "Discover Weekly" }),
-                      })
-                    )}
-                  >
-                    Discover Weekly
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-8 text-xs flex-1 sm:flex-none"
-                    onClick={() => act(() =>
-                      fetch(`/api/discovery/contexts/${encodeURIComponent(ctx.playlist_id)}`, {
-                        method: "DELETE",
-                      })
-                    )}
-                  >
-                    Ignore
-                  </Button>
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-
           {/* Tracks */}
           {discovery.tracks.length === 0 ? (
             <p className="text-sm text-muted-foreground">

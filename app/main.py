@@ -161,10 +161,6 @@ class DiscoverySourceInput(BaseModel):
     label: str = Field(default="Discover Weekly", min_length=1, max_length=60)
 
 
-class ContextLabel(BaseModel):
-    label: str = Field(min_length=1, max_length=60)
-
-
 class TogglePinRequest(BaseModel):
     stat_id: str = Field(min_length=1, max_length=64)
 
@@ -249,7 +245,6 @@ def build_state(user_id: Optional[int]) -> dict[str, Any]:
             "blocked": database.blocked_month(user_id, month),
             "months": months,
             "sources": database.discovery_sources(user_id),
-            "unlabelled": database.unlabelled_contexts(user_id),
             "last_sweep": tracker.last_sweep,
             "blocklist": blocklist.status(),
         },
@@ -549,15 +544,6 @@ async def remove_discovery_source(
     return {"sources": database.discovery_sources(user_id)}
 
 
-@app.post("/api/discovery/contexts/{playlist_id}")
-async def label_context(
-    playlist_id: str, payload: ContextLabel, user_id: int = Depends(current_user_id)
-) -> dict[str, Any]:
-    """Promote a playlist we've seen in playback but can't name into a discovery source."""
-    database.add_discovery_source(user_id, playlist_id, payload.label.strip())
-    return {"sources": database.discovery_sources(user_id)}
-
-
 @app.post("/api/discovery/sweep")
 async def sweep_now(user_id: int = Depends(current_user_id)) -> dict[str, Any]:
     """Read every source immediately instead of waiting for the next scheduled sweep."""
@@ -574,14 +560,6 @@ async def sweep_now(user_id: int = Depends(current_user_id)) -> dict[str, Any]:
     except Exception as exc:
         log.error("Sweep failed for user %s: %s", user_id, exc)
         raise HTTPException(status_code=502, detail="Sweep failed; check the logs.") from exc
-
-
-@app.delete("/api/discovery/contexts/{playlist_id}")
-async def dismiss_context(
-    playlist_id: str, user_id: int = Depends(current_user_id)
-) -> dict[str, Any]:
-    database.dismiss_context(user_id, playlist_id)
-    return {"unlabelled": database.unlabelled_contexts(user_id)}
 
 
 @app.exception_handler(SpotifyAuthError)

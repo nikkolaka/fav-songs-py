@@ -147,9 +147,7 @@ def demo_state() -> dict:
             ],
             "sources": [
                 {"playlist_id": "37i9dQZEVXcJZyENOWUFo7", "label": "Discover Weekly", "degraded": None},
-                {"playlist_id": "37i9dQZEVXcNxFI8Cj0jJA", "label": "Release Radar", "degraded": None},
             ],
-            "unlabelled": [],
             "blocklist": {
                 "artists": 7441,
                 "fetched_at": int(time.time()) - 3600,
