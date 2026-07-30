@@ -20,22 +20,29 @@ export function StatCard({ stat, pinned, onTogglePin, compact }: Props) {
   }
 
   return (
-    <div className="group relative rounded-lg border bg-card p-3 text-center transition-shadow hover:shadow-sm">
-      {onTogglePin && (
-        <button
-          type="button"
-          className={cn(
-            "absolute top-0 right-0 size-9 rounded-lg flex items-center justify-center transition-colors",
-            pinned
-              ? "text-amber-400 hover:text-amber-300 hover:bg-amber-400/10"
-              : "text-muted-foreground/0 group-hover:text-muted-foreground/50 hover:text-amber-400 hover:bg-amber-400/10"
-          )}
-          onClick={() => onTogglePin(stat.id)}
-          aria-label={pinned ? `Unpin ${stat.label}` : `Pin ${stat.label}`}
-        >
-          <Star className={cn("size-3.5", pinned && "fill-amber-400")} />
-        </button>
+    <div
+      className={cn(
+        "group relative rounded-lg border bg-card p-3 text-center transition-shadow hover:shadow-sm",
+        onTogglePin && "cursor-pointer",
       )}
+      onClick={() => onTogglePin?.(stat.id)}
+      role={onTogglePin ? "button" : undefined}
+      tabIndex={onTogglePin ? 0 : undefined}
+      onKeyDown={(e) => {
+        if (onTogglePin && (e.key === "Enter" || e.key === " ")) {
+          e.preventDefault()
+          onTogglePin(stat.id)
+        }
+      }}
+    >
+      <Star
+        className={cn(
+          "absolute top-1.5 right-1.5 size-3.5 transition-colors pointer-events-none",
+          pinned
+            ? "text-amber-400 fill-amber-400"
+            : "text-muted-foreground/0 group-hover:text-muted-foreground/50",
+        )}
+      />
       <p className="text-lg font-bold tabular-nums leading-tight truncate">{stat.value}</p>
       <p className="text-xs text-muted-foreground mt-0.5 truncate">{stat.label}</p>
       {stat.subtitle && (

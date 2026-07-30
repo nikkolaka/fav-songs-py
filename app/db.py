@@ -1048,14 +1048,7 @@ class Database:
             "subtitle": f"of {total_24h} played in last 24h",
         })
 
-        tracks_n = int(row_tracks["n"])
         total_listens_n = int(row_listens["total"]) if row_listens else 0
-        result.append({
-            "id": "tracks_seen",
-            "label": "Tracks Heard",
-            "value": str(tracks_n),
-            "subtitle": f"{total_listens_n:,} total plays",
-        })
 
         if row_next:
             result.append({
