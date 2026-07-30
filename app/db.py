@@ -1062,7 +1062,7 @@ class Database:
                 "id": "next_favorite",
                 "label": "Next Favorite",
                 "value": str(row_next["name"]),
-                "subtitle": f"{threshold - int(row_next['qualified_plays'])} plays to go",
+                "subtitle": f"{threshold - int(row_next['qualified_plays'])} plays to go · {row_next['artist']}",
             })
 
         result.append({
