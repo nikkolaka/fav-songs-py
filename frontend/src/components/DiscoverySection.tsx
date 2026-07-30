@@ -23,17 +23,6 @@ function ago(ms: number) {
 
 export function DiscoverySection({ discovery, act }: Props) {
   const [open, setOpen] = useState(false)
-  async function sweep() {
-    await act(async () => {
-      const res = await fetch("/api/discovery/sweep", { method: "POST" })
-      if (!res.ok) throw new Error("Sweep failed")
-      const data = await res.json()
-      const parts = [`${data.archived} archived`]
-      if (data.blocked) parts.push(`${data.blocked} filtered as AI`)
-      if (data.errors?.length) parts.push(`${data.errors.length} source unreadable`)
-      return data // will be handled by act's refresh
-    })
-  }
 
   async function addSource(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault()
@@ -61,8 +50,6 @@ export function DiscoverySection({ discovery, act }: Props) {
 
         <CollapsibleContent className="mt-3 space-y-3">
           <Separator />
-
-          <Button variant="outline" size="sm" className="h-8 sm:h-7" onClick={sweep}>Sweep now</Button>
 
           {/* Unlabelled contexts */}
           {discovery.unlabelled.length > 0 && (

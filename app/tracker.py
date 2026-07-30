@@ -19,6 +19,7 @@ quietly make everyone's percentages mean something different.
 
 import asyncio
 import logging
+from datetime import datetime, timedelta
 from typing import Any, Optional
 
 import spotipy
@@ -40,9 +41,9 @@ POLL_INTERVAL_SECONDS = 5
 
 FAVORITES_DESCRIPTION = "Songs you keep coming back to. Maintained automatically."
 
-# Discover Weekly refreshes on Mondays, so six hours catches every edition with room to
-# spare while costing one page fetch per source per sweep.
-SOURCE_SWEEP_INTERVAL_SECONDS = 6 * 3600
+# Discover Weekly refreshes on Mondays. A two-hour check is plenty — it only matters one
+# day a week, and the check itself costs a single timestamp read.
+SOURCE_SWEEP_CHECK_SECONDS = 2 * 3600
 SOURCE_SWEEP_RETRY_SECONDS = 900
 
 
@@ -266,16 +267,23 @@ class UserTracker:
         return summary
 
     def _maybe_sweep_sources(self, client: spotipy.Spotify) -> None:
-        due = self.db.last_source_sweep(self.user_id) + SOURCE_SWEEP_INTERVAL_SECONDS
+        due = self.db.last_source_sweep(self.user_id) + SOURCE_SWEEP_CHECK_SECONDS
         if now_seconds() < due:
             return
+
+        now = datetime.utcnow()
+        monday = (now - timedelta(days=now.weekday())).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        if now.weekday() != 0 and self.db.last_source_sweep(self.user_id) >= int(monday.timestamp()):
+            return
+
         try:
             self.sweep_sources(client)
         except Exception as exc:
-            # Come back in minutes rather than hours, but don't retry every cycle.
             self.db.set_last_source_sweep(
                 self.user_id,
-                now_seconds() - SOURCE_SWEEP_INTERVAL_SECONDS + SOURCE_SWEEP_RETRY_SECONDS,
+                now_seconds() - SOURCE_SWEEP_CHECK_SECONDS + SOURCE_SWEEP_RETRY_SECONDS,
             )
             log.warning("Source sweep failed for user %s: %s", self.user_id, exc)
 
