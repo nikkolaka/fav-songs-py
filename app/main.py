@@ -265,6 +265,20 @@ if USE_REACT:
     @app.get("/", response_class=FileResponse)
     async def index() -> FileResponse:
         return FileResponse(os.path.join(FRONTEND_DIST, "index.html"))
+
+    @app.get("/favicon.svg")
+    async def favicon() -> FileResponse:
+        return FileResponse(
+            os.path.join(FRONTEND_DIST, "favicon.svg"),
+            media_type="image/svg+xml",
+        )
+
+    @app.get("/icons.svg")
+    async def icons() -> FileResponse:
+        return FileResponse(
+            os.path.join(FRONTEND_DIST, "icons.svg"),
+            media_type="image/svg+xml",
+        )
 else:
     @app.get("/", response_class=FileResponse)
     async def index() -> FileResponse:
