@@ -1,7 +1,6 @@
 import { useRef, useState, useEffect } from "react"
 import type { NowPlaying } from "@/types"
 import { Card } from "@/components/ui/card"
-import { Progress } from "@/components/ui/progress"
 import { Separator } from "@/components/ui/separator"
 import { Music } from "lucide-react"
 
@@ -24,8 +23,11 @@ interface Anchor {
 
 export function NowPlayingCard({ now }: Props) {
   const anchor = useRef<Anchor | null>(null)
+  const indicatorRef = useRef<HTMLDivElement>(null)
+  const frameRef = useRef(0)
   const [, tick] = useState(0)
 
+  // Update anchor when server data arrives — does not re-render the bar
   useEffect(() => {
     if (now) {
       anchor.current = {
@@ -38,54 +40,81 @@ export function NowPlayingCard({ now }: Props) {
     } else {
       anchor.current = null
     }
-  }, [now?.progress_ms, now?.heard_ms, now?.is_playing, now?.duration_ms])
+  }, [now?.progress_ms, now?.heard_ms, now?.is_playing, now?.duration_ms]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Smooth bar: rAF directly updates the DOM, zero React re-renders
+  useEffect(() => {
+    let running = true
+
+    function frame() {
+      if (!running) return
+      const a = anchor.current
+      const el = indicatorRef.current
+      if (el && a) {
+        if (a.is_playing) {
+          const elapsed = Date.now() - a.received_at
+          const pct = Math.min(1, (a.progress_ms + elapsed) / (a.duration_ms || 1))
+          el.style.transform = `translateX(-${(1 - pct) * 100}%)`
+        }
+      }
+      frameRef.current = requestAnimationFrame(frame)
+    }
+    frameRef.current = requestAnimationFrame(frame)
+    return () => {
+      running = false
+      cancelAnimationFrame(frameRef.current)
+    }
+  }, [])
+
+  // Text-only tick: time display updates once per second
   useEffect(() => {
     const id = setInterval(() => tick((n) => n + 1), 1000)
     return () => clearInterval(id)
   }, [])
 
   const a = anchor.current
-  let display = now
+  let heard = now?.heard_ms ?? 0
+  let duration = now?.duration_ms ?? 0
+  let isPlaying = now?.is_playing ?? false
 
   if (now && a && a.is_playing) {
     const elapsed = Date.now() - a.received_at
-    const estProgress = a.progress_ms + elapsed
-    const estHeard = a.heard_ms + elapsed
-    const dur = a.duration_ms || 1
-    display = {
-      ...now,
-      progress_ms: Math.min(estProgress, dur),
-      heard_ms: Math.min(estHeard, dur),
-      completion_ratio: Math.min(estProgress / dur, 1),
-      heard_ratio: Math.min(estHeard / dur, 1),
-    }
+    heard = Math.min(a.heard_ms + elapsed, a.duration_ms || a.heard_ms + elapsed)
+    duration = a.duration_ms || duration
+  } else if (a) {
+    heard = a.heard_ms
+    duration = a.duration_ms
+    isPlaying = a.is_playing
   }
 
   return (
     <Card className="p-4">
       <h3 className="font-semibold text-sm">Now playing</h3>
 
-      {display ? (
+      {now ? (
         <>
           <Separator className="my-3" />
 
           <div>
-            <p className="font-medium truncate">{display.name}</p>
-            <p className="text-sm text-muted-foreground truncate">{display.artist}</p>
+            <p className="font-medium truncate">{now.name}</p>
+            <p className="text-sm text-muted-foreground truncate">{now.artist}</p>
           </div>
 
-          <Progress
-            className="mt-3"
-            value={Math.round((display.completion_ratio || 0) * 100)}
-          />
+          {/* Custom smooth bar — rAF drives the fill, no React renders */}
+          <div className="relative mt-3 h-1 w-full overflow-hidden rounded-full bg-muted">
+            <div
+              ref={indicatorRef}
+              className="size-full flex-1 bg-primary will-change-transform"
+              style={{ transform: "translateX(-100%)" }}
+            />
+          </div>
 
           <div className="flex items-center justify-between text-xs mt-2">
             <span className="text-muted-foreground tabular-nums">
-              {clock(display.heard_ms ?? 0)} / {clock(display.duration_ms ?? 0)}
+              {clock(heard)} / {clock(duration)}
             </span>
-            <span className={display.is_playing ? "text-emerald-500" : "text-muted-foreground"}>
-              {display.is_playing ? "Listening" : "Paused"}
+            <span className={isPlaying ? "text-emerald-500" : "text-muted-foreground"}>
+              {isPlaying ? "Listening" : "Paused"}
             </span>
           </div>
         </>
