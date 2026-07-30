@@ -58,13 +58,13 @@ export function PinnedStatsBar({ pinnedStats }: Props) {
       mounted.current = false
       clearInterval(pollRef.current)
     }
-  }, [pinnedKey])
+  }, [pinnedKey]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const showSkeleton = loading && !loadedOnce.current && stats.length === 0
 
   return (
     <Card className="p-3">
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <Pin className="size-3.5 text-muted-foreground shrink-0" />
         <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
           Pinned

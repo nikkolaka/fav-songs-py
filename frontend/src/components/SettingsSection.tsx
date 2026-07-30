@@ -110,7 +110,7 @@ export function SettingsSection({ settings, act, onNotify }: Props) {
               </div>
             </div>
 
-            <Button type="submit" size="sm">Save settings</Button>
+            <Button type="submit" size="sm" className="h-8 sm:h-7">Save settings</Button>
           </form>
         </CollapsibleContent>
       </Card>

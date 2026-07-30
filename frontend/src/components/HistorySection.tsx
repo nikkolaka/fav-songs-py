@@ -39,8 +39,8 @@ interface Props {
 function HistoryRow({ item, isFav }: { item: HistoryItem; isFav: boolean }) {
   const when = new Date(item.played_at)
   return (
-    <li className="flex items-center gap-3 py-1.5 border-b border-border last:border-0 text-xs">
-      <span className="w-12 shrink-0 text-muted-foreground tabular-nums">
+    <li className="flex items-center gap-2 sm:gap-3 py-1.5 border-b border-border last:border-0 text-xs">
+      <span className="w-10 sm:w-12 shrink-0 text-muted-foreground tabular-nums">
         {timeFmt.format(when)}
       </span>
       <span className="min-w-0 flex-1">
@@ -50,7 +50,7 @@ function HistoryRow({ item, isFav }: { item: HistoryItem; isFav: boolean }) {
         </span>
         <span className="block text-muted-foreground truncate">{item.artist}</span>
       </span>
-      <span className="w-10 shrink-0 text-right tabular-nums text-muted-foreground">
+      <span className="w-8 sm:w-10 shrink-0 text-right tabular-nums text-muted-foreground">
         {item.play_count ?? 0}
       </span>
     </li>
@@ -152,7 +152,7 @@ export function HistorySection({ favoriteTrackIds }: Props) {
         <CollapsibleContent className="mt-3 space-y-3">
           <Separator />
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
             <Input
               placeholder="Search by track or artist"
               value={query}
@@ -162,7 +162,7 @@ export function HistorySection({ favoriteTrackIds }: Props) {
             <Button
               variant={filtersOpen ? "default" : "outline"}
               size="sm"
-              className="h-8 text-xs gap-1.5 shrink-0"
+              className="h-8 sm:h-7 text-xs gap-1.5"
               onClick={() => setFiltersOpen((p) => !p)}
             >
               <Filter className="size-3.5" />
@@ -172,7 +172,7 @@ export function HistorySection({ favoriteTrackIds }: Props) {
 
           {filtersOpen && (
             <div className="space-y-3 rounded-lg border p-3">
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <div className="space-y-1">
                   <label className="text-[11px] font-medium text-muted-foreground">From</label>
                   <input

@@ -14,7 +14,7 @@ interface Props {
 
 function Skeleton() {
   return (
-    <div className="grid grid-cols-2 gap-3">
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
       {Array.from({ length: 6 }).map((_, i) => (
         <div key={i} className="rounded-lg border bg-card p-3 space-y-2 animate-pulse">
           <div className="h-5 w-16 rounded bg-muted mx-auto" />
@@ -96,7 +96,7 @@ export function StatisticsSection({ pinnedStats, onPinsChanged }: Props) {
           )}
 
           {!loading && stats.length > 0 && (
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               {sorted.map((s) => (
                 <div key={s.id} className={toggling === s.id ? "opacity-50" : ""}>
                   <StatCard

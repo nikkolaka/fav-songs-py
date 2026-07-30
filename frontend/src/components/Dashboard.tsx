@@ -59,7 +59,7 @@ export function Dashboard({ state, onRefresh }: Props) {
     <div className="min-h-screen">
       {/* Top bar */}
       <header className="sticky top-0 z-10 border-b bg-background/80 backdrop-blur-sm">
-        <div className="mx-auto flex max-w-2xl items-center justify-between gap-3 px-4 py-2.5">
+        <div className="mx-auto flex max-w-2xl lg:max-w-3xl items-center justify-between gap-3 px-4 py-2.5">
           <div className="flex items-center gap-3">
             <h1 className="text-sm font-bold tracking-tight">listen</h1>
             <span className="text-xs text-muted-foreground truncate max-w-32">
@@ -78,7 +78,7 @@ export function Dashboard({ state, onRefresh }: Props) {
       </header>
 
       {/* Main content */}
-      <div className="mx-auto max-w-2xl space-y-4 p-4">
+      <div className="mx-auto max-w-2xl lg:max-w-3xl space-y-4 px-4 py-4">
         {banner && (
           <div
             className={`rounded-md px-4 py-2.5 text-xs ${

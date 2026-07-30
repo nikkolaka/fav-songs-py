@@ -26,7 +26,7 @@ export function ControlsCard({ trackerRunning, onToggleTracker, onLogout, onDisc
           <Separator />
 
           <div className="space-y-2">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
               <div className="min-w-0">
                 <p className="text-sm font-medium">Tracking</p>
                 <p className="text-xs text-muted-foreground">
@@ -38,7 +38,7 @@ export function ControlsCard({ trackerRunning, onToggleTracker, onLogout, onDisc
               <Button
                 variant={trackerRunning ? "destructive" : "default"}
                 size="sm"
-                className="h-7 text-xs shrink-0 ml-3"
+                className="h-8 sm:h-7 text-xs shrink-0 self-end sm:self-auto"
                 onClick={onToggleTracker}
               >
                 {trackerRunning ? "Pause" : "Resume"}
@@ -49,7 +49,7 @@ export function ControlsCard({ trackerRunning, onToggleTracker, onLogout, onDisc
           <Separator />
 
           <div className="space-y-2">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
               <div className="min-w-0">
                 <p className="text-sm font-medium">Sign out</p>
                 <p className="text-xs text-muted-foreground">
@@ -59,7 +59,7 @@ export function ControlsCard({ trackerRunning, onToggleTracker, onLogout, onDisc
               <Button
                 variant="outline"
                 size="sm"
-                className="h-7 text-xs shrink-0 ml-3"
+                className="h-8 sm:h-7 text-xs shrink-0 self-end sm:self-auto"
                 onClick={onLogout}
               >
                 Sign out
@@ -70,7 +70,7 @@ export function ControlsCard({ trackerRunning, onToggleTracker, onLogout, onDisc
           <Separator />
 
           <div className="space-y-2">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
               <div className="min-w-0">
                 <p className="text-sm font-medium">Disconnect</p>
                 <p className="text-xs text-muted-foreground">
@@ -81,7 +81,7 @@ export function ControlsCard({ trackerRunning, onToggleTracker, onLogout, onDisc
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-7 text-xs text-destructive hover:text-destructive shrink-0 ml-3"
+                className="h-8 sm:h-7 text-xs text-destructive hover:text-destructive shrink-0 self-end sm:self-auto"
                 onClick={onDisconnect}
               >
                 Erase all data

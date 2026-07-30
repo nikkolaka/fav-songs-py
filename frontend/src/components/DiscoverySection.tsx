@@ -62,7 +62,7 @@ export function DiscoverySection({ discovery, act }: Props) {
         <CollapsibleContent className="mt-3 space-y-3">
           <Separator />
 
-          <Button variant="outline" size="sm" onClick={sweep}>Sweep now</Button>
+          <Button variant="outline" size="sm" className="h-8 sm:h-7" onClick={sweep}>Sweep now</Button>
 
           {/* Unlabelled contexts */}
           {discovery.unlabelled.length > 0 && (
@@ -71,15 +71,16 @@ export function DiscoverySection({ discovery, act }: Props) {
                 You listened to a track from an unknown playlist. Tell us what it is:
               </p>
               {discovery.unlabelled.map((ctx) => (
-                <div key={ctx.playlist_id} className="flex items-center gap-2 text-xs">
+                <div key={ctx.playlist_id} className="flex flex-col sm:flex-row items-start sm:items-center gap-2 text-xs">
                   <span className="flex-1">
                     <strong>{ctx.title || ctx.sample_track}</strong>
                     <span className="text-muted-foreground"> · {ctx.play_count} plays</span>
                   </span>
+                  <span className="flex gap-2 self-stretch sm:self-auto">
                   <Button
                     size="sm"
                     variant="default"
-                    className="h-6 text-xs"
+                    className="h-8 text-xs flex-1 sm:flex-none"
                     onClick={() => act(() =>
                       fetch(`/api/discovery/contexts/${encodeURIComponent(ctx.playlist_id)}`, {
                         method: "POST",
@@ -93,7 +94,7 @@ export function DiscoverySection({ discovery, act }: Props) {
                   <Button
                     size="sm"
                     variant="outline"
-                    className="h-6 text-xs"
+                    className="h-8 text-xs flex-1 sm:flex-none"
                     onClick={() => act(() =>
                       fetch(`/api/discovery/contexts/${encodeURIComponent(ctx.playlist_id)}`, {
                         method: "DELETE",
@@ -102,6 +103,7 @@ export function DiscoverySection({ discovery, act }: Props) {
                   >
                     Ignore
                   </Button>
+                  </span>
                 </div>
               ))}
             </div>
@@ -166,7 +168,7 @@ export function DiscoverySection({ discovery, act }: Props) {
                   <Button
                     variant="ghost"
                     size="sm"
-                    className="h-6 text-xs"
+                    className="h-7 text-xs"
                     onClick={() => act(() =>
                       fetch(`/api/discovery/sources/${encodeURIComponent(s.playlist_id)}`, {
                         method: "DELETE",
@@ -178,7 +180,7 @@ export function DiscoverySection({ discovery, act }: Props) {
                 </div>
               ))}
 
-              <form onSubmit={addSource} className="flex gap-2">
+              <form onSubmit={addSource} className="flex flex-col sm:flex-row gap-2">
                 <Input
                   name="source-input"
                   placeholder="Paste a Discover Weekly link"
@@ -188,9 +190,9 @@ export function DiscoverySection({ discovery, act }: Props) {
                   name="source-label"
                   placeholder="Label"
                   defaultValue="Discover Weekly"
-                  className="h-8 w-32 text-xs"
+                  className="h-8 w-full sm:w-28 text-xs"
                 />
-                <Button type="submit" size="sm" className="h-8 text-xs">Add</Button>
+                <Button type="submit" size="sm" className="h-8 text-xs shrink-0">Add</Button>
               </form>
 
               {discovery.months.map((m) => (

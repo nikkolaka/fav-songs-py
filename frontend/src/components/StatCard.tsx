@@ -25,7 +25,7 @@ export function StatCard({ stat, pinned, onTogglePin, compact }: Props) {
         <button
           type="button"
           className={cn(
-            "absolute top-1 right-1 rounded-md p-1.5 transition-colors",
+            "absolute top-0 right-0 size-9 rounded-lg flex items-center justify-center transition-colors",
             pinned
               ? "text-amber-400 hover:text-amber-300 hover:bg-amber-400/10"
               : "text-muted-foreground/0 group-hover:text-muted-foreground/50 hover:text-amber-400 hover:bg-amber-400/10"
@@ -37,7 +37,7 @@ export function StatCard({ stat, pinned, onTogglePin, compact }: Props) {
         </button>
       )}
       <p className="text-lg font-bold tabular-nums leading-tight truncate">{stat.value}</p>
-      <p className="text-xs text-muted-foreground mt-0.5">{stat.label}</p>
+      <p className="text-xs text-muted-foreground mt-0.5 truncate">{stat.label}</p>
       {stat.subtitle && (
         <p className="text-[10px] text-muted-foreground/70 mt-0.5 leading-snug">{stat.subtitle}</p>
       )}
