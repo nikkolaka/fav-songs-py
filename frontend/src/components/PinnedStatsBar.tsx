@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect, useRef, useMemo } from "react"
 import type { StatCardData } from "@/types"
 import { fetchStats } from "@/api"
 import { StatCard } from "@/components/StatCard"
@@ -14,33 +14,53 @@ export function PinnedStatsBar({ pinnedStats }: Props) {
   const [loading, setLoading] = useState(false)
   const pollRef = useRef<ReturnType<typeof setInterval>>()
   const mounted = useRef(false)
+  const loadedOnce = useRef(false)
+
+  const pinnedKey = useMemo(
+    () => pinnedStats.slice().sort().join(","),
+    [pinnedStats],
+  )
 
   useEffect(() => {
     mounted.current = true
-    if (!pinnedStats.length) {
+
+    if (!pinnedKey) {
       setStats([])
       setLoading(false)
+      loadedOnce.current = false
+      clearInterval(pollRef.current)
       return
     }
 
-    setLoading(true)
+    if (!loadedOnce.current) {
+      setLoading(true)
+    }
+
     const load = async () => {
       try {
         const data = await fetchStats()
         if (mounted.current) {
-          setStats(data.stats.filter((s) => pinnedStats.includes(s.id)))
+          const current = pinnedStats
+          setStats(data.stats.filter((s) => current.includes(s.id)))
         }
       } catch { /* silent */ }
-      if (mounted.current) setLoading(false)
+      if (mounted.current) {
+        setLoading(false)
+        loadedOnce.current = true
+      }
     }
     load()
 
+    clearInterval(pollRef.current)
     pollRef.current = setInterval(load, 60_000)
+
     return () => {
       mounted.current = false
       clearInterval(pollRef.current)
     }
-  }, [pinnedStats])
+  }, [pinnedKey])
+
+  const showSkeleton = loading && !loadedOnce.current && stats.length === 0
 
   return (
     <Card className="p-3">
@@ -50,14 +70,14 @@ export function PinnedStatsBar({ pinnedStats }: Props) {
           Pinned
         </span>
 
-        {loading && !stats.length && (
+        {showSkeleton && (
           <div className="flex items-center gap-2">
             <div className="h-5 w-16 animate-pulse rounded bg-muted" />
             <div className="h-5 w-20 animate-pulse rounded bg-muted" />
           </div>
         )}
 
-        {!loading && (
+        {!showSkeleton && (
           <div className="flex items-center gap-2 overflow-x-auto">
             {stats.map((s) => (
               <StatCard key={s.id} stat={s} pinned={true} compact />
