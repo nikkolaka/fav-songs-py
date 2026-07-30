@@ -89,7 +89,6 @@ class UserTracker:
         # Spotify call of its own.
         self.favorites_snapshot: list[dict[str, str]] = []
         self.favorites_membership: set[str] = set()
-        self._last_capture_key: Optional[str] = None
         # The playback currently being measured. Mirrored to an open row in `listens`,
         # so a restart keeps whatever was heard before it rather than dropping it.
         self.session: Optional[Session] = None
@@ -208,9 +207,6 @@ class UserTracker:
 
         try:
             client = client or self.spotify.client(self.user_id)
-            # A track whose final poll landed short of the threshold only clears it once
-            # the tail is credited, so the archive gets its last look here.
-            self._try_capture(client, settings, session, result["completion_ratio"])
             if settings["auto_add_enabled"] and count >= int(settings["favorite_threshold"]):
                 added = self.add_to_favorites(client, [result["track_id"]])
                 if added:
@@ -310,38 +306,7 @@ class UserTracker:
         if not obs or not obs.is_playing or not self.session:
             return False
 
-        self._try_capture(client, settings, self.session, self.session.heard_ratio)
         return True
-
-    def _try_capture(
-        self,
-        client: spotipy.Spotify,
-        settings: dict[str, Any],
-        session: Session,
-        heard_ratio: float,
-    ) -> None:
-        """Offer a session to the discovery archive, at most once per playback."""
-        key = f"{session.track_id}:{session.started_at}"
-        if key == self._last_capture_key:
-            return
-        try:
-            captured = self.discovery.capture(
-                self.user_id,
-                client,
-                settings,
-                track_id=session.track_id,
-                name=session.name,
-                artist=session.artist,
-                context_uri=session.context_uri,
-                heard_ratio=heard_ratio,
-            )
-        except spotipy.SpotifyException:
-            raise
-        except Exception as exc:
-            log.warning("Discovery capture failed for user %s: %s", self.user_id, exc)
-            return
-        if captured:
-            self._last_capture_key = key
 
     def flush(self) -> None:
         """Close the open listen on the way out, so pausing doesn't discard it."""
