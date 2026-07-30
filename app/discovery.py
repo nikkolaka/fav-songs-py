@@ -199,7 +199,7 @@ class Discovery:
     def sweep_sources(
         self, user_id: int, client: spotipy.Spotify, settings: dict[str, Any]
     ) -> dict[str, Any]:
-        """Read every registered source and archive everything new this month."""
+        """Read Discover Weekly and archive everything new this month."""
         summary: dict[str, Any] = {"archived": 0, "blocked": 0, "errors": []}
         if not settings.get("discovery_enabled"):
             return summary
@@ -207,7 +207,11 @@ class Discovery:
         self.blocklist.refresh()
         key = month_key()
 
-        for source in self.db.discovery_sources(user_id):
+        sources = [
+            s for s in self.db.discovery_sources(user_id)
+            if s["label"].casefold() in AUTO_SOURCE_TITLES
+        ]
+        for source in sources:
             playlist_id = source["playlist_id"]
             try:
                 data = read_playlist_embed(playlist_id)
