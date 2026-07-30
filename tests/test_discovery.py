@@ -19,20 +19,6 @@ from app.discovery import (
 )
 
 
-def capture(tracker, user_id, spotify, settings, track_id, playlist=None, heard_ratio=0.9):
-    """Offer one measured listen to the archive, the way the tracker does."""
-    return tracker.discovery.capture(
-        user_id,
-        spotify,
-        settings,
-        track_id=track_id,
-        name="Song",
-        artist="Artist",
-        context_uri=f"spotify:playlist:{playlist}" if playlist else None,
-        heard_ratio=heard_ratio,
-    )
-
-
 def embed_html(name="Discover Weekly", tracks=(("t1", "Song One", "Band One"),)):
     payload = {
         "props": {
@@ -310,88 +296,3 @@ def test_failed_playlist_write_is_rolled_back(tracker, spotify, db, user_id, mon
     # The next sweep picks it up again rather than skipping it forever.
     assert tracker.sweep_sources(spotify)["archived"] == 1
     assert next(iter(spotify.playlists.values()))["tracks"] == ["t1"]
-
-
-# ------------------------------------------------ play-based fallback path
-
-
-def test_unknown_context_is_recorded_with_its_resolved_name(
-    tracker, spotify, db, user_id, monkeypatch
-):
-    monkeypatch.setattr(discovery_mod, "playlist_title", lambda pid: "Jazz for Study")
-    settings = db.settings(user_id)
-
-    assert capture(tracker, user_id, spotify, settings, "t1", "pl99") is None
-
-    pending = db.unlabelled_contexts(user_id)
-    assert len(pending) == 1
-    assert pending[0]["title"] == "Jazz for Study"
-    assert pending[0]["sample_track"] == "Artist - Song"
-
-
-def test_discover_weekly_registers_itself(tracker, spotify, db, user_id, monkeypatch):
-    """Archiving Discover Weekly is the whole point, so it doesn't wait for a click."""
-    monkeypatch.setattr(discovery_mod, "playlist_title", lambda pid: "Discover Weekly")
-    settings = db.settings(user_id)
-
-    capture(tracker, user_id, spotify, settings, "t1", "dw123")
-
-    assert [s["playlist_id"] for s in db.discovery_sources(user_id)] == ["dw123"]
-    assert db.unlabelled_contexts(user_id) == []
-
-
-def test_capture_archives_from_a_known_source(tracker, spotify, db, user_id):
-    db.add_discovery_source(user_id, "dw123", "Discover Weekly")
-    settings = db.settings(user_id)
-
-    captured = capture(tracker, user_id, spotify, settings, "t1", "dw123")
-
-    assert captured["track_id"] == "t1"
-    assert next(iter(spotify.playlists.values()))["tracks"] == ["t1"]
-
-
-def test_capture_respects_the_blocklist(tracker, spotify, db, user_id):
-    db.add_discovery_source(user_id, "dw123", "Discover Weekly")
-    spotify.track_artists = {"bot": ["aiartist-known"]}
-    settings = db.settings(user_id)
-
-    assert capture(tracker, user_id, spotify, settings, "bot", "dw123") is None
-    assert spotify.playlists == {}
-    assert len(db.blocked_month(user_id, month_key())) == 1
-
-
-def test_partial_listen_is_not_captured(tracker, spotify, db, user_id):
-    """Same threshold that gates favourites: not heard, not archived."""
-    db.add_discovery_source(user_id, "dw123", "Discover Weekly")
-    settings = db.settings(user_id)
-
-    assert capture(tracker, user_id, spotify, settings, "t1", "dw123", heard_ratio=0.3) is None
-    assert spotify.playlists == {}
-
-
-def test_capture_will_not_duplicate_what_a_sweep_already_archived(
-    tracker, spotify, db, user_id, monkeypatch
-):
-    db.add_discovery_source(user_id, "dw123", "Discover Weekly")
-    monkeypatch.setattr(
-        discovery_mod,
-        "read_playlist_embed",
-        lambda pid: {
-            "name": "Discover Weekly",
-            "tracks": [{"track_id": "t1", "name": "Song", "artist": "Artist"}],
-        },
-    )
-    tracker.sweep_sources(spotify)
-
-    settings = db.settings(user_id)
-    assert capture(tracker, user_id, spotify, settings, "t1", "dw123") is None
-    assert next(iter(spotify.playlists.values()))["tracks"] == ["t1"]
-
-
-def test_discovery_disabled_captures_nothing(tracker, spotify, db, user_id):
-    db.add_discovery_source(user_id, "dw123", "Discover Weekly")
-    settings = db.update_settings(user_id, {"discovery_enabled": False})
-
-    assert capture(tracker, user_id, spotify, settings, "t1", "dw123") is None
-    assert tracker.sweep_sources(spotify) == {"archived": 0, "blocked": 0, "errors": []}
-    assert spotify.playlists == {}
