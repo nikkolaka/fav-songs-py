@@ -18,7 +18,7 @@ export function ControlsCard({ trackerRunning, onToggleTracker, onLogout, onDisc
     <Collapsible open={open} onOpenChange={setOpen}>
       <Card className="p-4">
         <CollapsibleTrigger className="flex w-full items-center justify-between hover:opacity-80">
-          <h3 className="font-semibold text-sm">Controls</h3>
+          <h3 className="font-semibold text-sm">Account</h3>
           <span className="text-xs text-muted-foreground">{open ? "Hide" : "Show"}</span>
         </CollapsibleTrigger>
 

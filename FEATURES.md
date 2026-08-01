@@ -88,16 +88,16 @@ Shows the track currently playing with a smooth progress bar that updates at 60f
 - **Statistics Section:** Collapsible grid of all stats. Click to pin/unpin.
 - **History Section:** Collapsible searchable history with filters.
 - **Discovery Section:** Current month's discoveries, blocked tracks, sources, and past months.
-- **Settings:** Threshold, playlist name, toggles.
-- **Controls:** Pause/resume tracking, sign out, disconnect — all with explanatory labels.
+- **Preferences:** Threshold, playlist name, toggles.
+- **Account:** Pause/resume tracking, sign out, disconnect — all with explanatory labels.
 
-## Controls
+## Account
 
 - **Pause/Resume:** Stops or starts the 5-second polling loop. When paused, nothing is measured and nothing new appears in history.
 - **Sign out:** Ends the browser session. Your Spotify data and playlists are untouched.
 - **Disconnect:** Erases your listening history, tokens, and archive from this server. Playlists already in your Spotify account are left alone.
 
-## Settings
+## Preferences
 
 | Setting | Default | Description |
 |---|---|---|

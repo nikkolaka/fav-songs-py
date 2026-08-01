@@ -40,14 +40,14 @@ export function SettingsSection({ settings, act, onNotify }: Props) {
         }),
       })
     )
-    onNotify("Settings saved.", false)
+    onNotify("Preferences saved.", false)
   }
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
       <Card className="p-4">
         <CollapsibleTrigger className="flex w-full items-center justify-between hover:opacity-80">
-          <h3 className="font-semibold text-sm">Settings</h3>
+          <h3 className="font-semibold text-sm">Preferences</h3>
           <span className="text-xs text-muted-foreground">{open ? "Hide" : "Show"}</span>
         </CollapsibleTrigger>
 
