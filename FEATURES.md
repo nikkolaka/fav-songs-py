@@ -42,13 +42,23 @@ A set of computed stats you can pin to a persistent bar at the top of the dashbo
 | Next Favorite | The track closest to the favourite threshold, with artist |
 | All-Time Plays | Total listens ever recorded |
 | Listening Time | Total hours:minutes tracked |
+| Tracking Since | Date of your first recorded listen |
+| Unique Tracks | Total distinct songs ever heard |
+| Unique Artists | Total distinct artists ever heard |
 | Favorites | Number of tracks over the favourite threshold |
+| Top Track | Your most-played track of all time |
 | Top Artist | Artist with the most counted plays |
+| Top Source | Playlist/source with the most plays |
 | Current Streak | Consecutive days with at least one listen |
 | Longest Streak | All-time best daily streak |
 | Peak Hour | Your most active hour of the day |
+| Top Day | Your busiest day of the week |
+| Listening Vibe | "Night Owl" or "Early Bird" based on midnight–5am listening |
 | Avg Completion | Average listen-through percentage |
+| Skip Rate | Percentage of tracks skipped before meeting the threshold |
+| Perfect Listens | Tracks you completed 100% of |
 | Daily Avg (7d) | Average daily listening hours over the last week |
+| Listening Trend | Percentage change in listening time this week vs last week |
 
 Stats update every 60 seconds. Click any stat card to pin/unpin it from the top bar.
 

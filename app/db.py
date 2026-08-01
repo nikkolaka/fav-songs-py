@@ -960,12 +960,13 @@ class Database:
                 (user_id, now_millis() - 86_400_000),
             ).fetchone()
 
-            # Total listens + listening time + avg completion
+            # Total listens + listening time + avg completion + skipped
             row_listens = self.conn.execute(
                 """
                 SELECT COUNT(*) AS total,
                        COALESCE(SUM(listened_ms), 0) AS total_ms,
-                       COALESCE(AVG(completion_ratio), 0) AS avg_completion
+                       COALESCE(AVG(completion_ratio), 0) AS avg_completion,
+                       COALESCE(SUM(CASE WHEN qualified = 0 THEN 1 ELSE 0 END), 0) AS skipped
                   FROM listens WHERE user_id = ? AND is_open = 0
                 """,
                 (user_id,),
@@ -1029,6 +1030,81 @@ class Database:
                 (user_id, now_millis() - 7 * 86_400_000),
             ).fetchone()
 
+            # Top track
+            row_top_track = self.conn.execute(
+                """
+                SELECT name, artist, qualified_plays
+                  FROM play_counts WHERE user_id = ?
+                 ORDER BY qualified_plays DESC, last_played DESC
+                 LIMIT 1
+                """,
+                (user_id,),
+            ).fetchone()
+
+            # Unique artists
+            row_unique_artists = self.conn.execute(
+                "SELECT COUNT(DISTINCT artist) AS n FROM play_counts WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+
+            # Perfect listens (tracks completed 100%)
+            row_perfect = self.conn.execute(
+                """
+                SELECT COUNT(*) AS n FROM listens
+                 WHERE user_id = ? AND is_open = 0 AND completion_ratio >= 1.0
+                """,
+                (user_id,),
+            ).fetchone()
+
+            # Listening trend: this week vs last week
+            week_ago = now_millis() - 7 * 86_400_000
+            fortnight_ago = now_millis() - 14 * 86_400_000
+            row_trend = self.conn.execute(
+                """
+                SELECT COALESCE(SUM(CASE WHEN played_at >= ? THEN listened_ms END), 0) AS this_week,
+                       COALESCE(SUM(CASE WHEN played_at >= ? AND played_at < ? THEN listened_ms END), 0) AS last_week
+                  FROM listens WHERE user_id = ? AND is_open = 0
+                """,
+                (week_ago, fortnight_ago, week_ago, user_id),
+            ).fetchone()
+
+            # First listen date
+            row_first = self.conn.execute(
+                "SELECT MIN(played_at) AS ts FROM listens WHERE user_id = ? AND is_open = 0",
+                (user_id,),
+            ).fetchone()
+
+            # Most active day of week
+            row_dow = self.conn.execute(
+                """
+                SELECT CAST(STRFTIME('%w', played_at / 1000, 'unixepoch', 'localtime') AS INTEGER) AS dow,
+                       COUNT(*) AS n
+                  FROM listens WHERE user_id = ?
+                 GROUP BY dow ORDER BY n DESC LIMIT 1
+                """,
+                (user_id,),
+            ).fetchone()
+
+            # Late night listening
+            row_late = self.conn.execute(
+                """
+                SELECT COUNT(*) AS total,
+                       SUM(CASE WHEN CAST(STRFTIME('%H', played_at / 1000, 'unixepoch', 'localtime') AS INTEGER) BETWEEN 0 AND 5 THEN 1 ELSE 0 END) AS late
+                  FROM listens WHERE user_id = ? AND is_open = 0
+                """,
+                (user_id,),
+            ).fetchone()
+
+            # Top context / playlist
+            row_context = self.conn.execute(
+                """
+                SELECT title, playlist_id, play_count
+                  FROM seen_contexts WHERE user_id = ?
+                 ORDER BY play_count DESC LIMIT 1
+                """,
+                (user_id,),
+            ).fetchone()
+
         # Streaks (outside lock b/c it uses distinct_days which acquires its own)
         days = self._distinct_days(user_id)
         current_streak, longest_streak = self._compute_streaks(days)
@@ -1072,6 +1148,31 @@ class Database:
             "subtitle": "total tracked",
         })
 
+        if row_first and row_first["ts"]:
+            first_ts = int(row_first["ts"]) / 1000
+            result.append({
+                "id": "first_listen",
+                "label": "Tracking Since",
+                "value": time.strftime("%b %d, %Y", time.localtime(first_ts)),
+                "subtitle": "first listen recorded",
+            })
+
+        total_tracks_n = int(row_tracks["n"])
+        result.append({
+            "id": "total_tracks",
+            "label": "Unique Tracks",
+            "value": f"{total_tracks_n:,}",
+            "subtitle": "different songs heard",
+        })
+
+        total_artists_n = int(row_unique_artists["n"]) if row_unique_artists else 0
+        result.append({
+            "id": "total_artists",
+            "label": "Unique Artists",
+            "value": f"{total_artists_n:,}",
+            "subtitle": "different artists heard",
+        })
+
         result.append({
             "id": "favorites_count",
             "label": "Favorites",
@@ -1079,12 +1180,28 @@ class Database:
             "subtitle": "tracks over threshold",
         })
 
+        if row_top_track:
+            result.append({
+                "id": "top_track",
+                "label": "Top Track",
+                "value": str(row_top_track["name"]),
+                "subtitle": f"{row_top_track['artist']} · {int(row_top_track['qualified_plays'])} plays",
+            })
+
         if row_artist:
             result.append({
                 "id": "top_artist",
                 "label": "Top Artist",
                 "value": str(row_artist["artist"]),
                 "subtitle": f"{int(row_artist['plays'])} counted plays",
+            })
+
+        if row_context and row_context["title"]:
+            result.append({
+                "id": "top_context",
+                "label": "Top Source",
+                "value": str(row_context["title"]),
+                "subtitle": f"{int(row_context['play_count'])} plays · most played playlist",
             })
 
         result.append({
@@ -1109,6 +1226,25 @@ class Database:
                 "subtitle": "most active hour",
             })
 
+        _DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+        if row_dow:
+            result.append({
+                "id": "top_day",
+                "label": "Top Day",
+                "value": _DAY_NAMES[int(row_dow["dow"])],
+                "subtitle": "busiest day of the week",
+            })
+
+        if row_late and int(row_late["total"]) > 0:
+            late_pct = round(int(row_late["late"]) / int(row_late["total"]) * 100)
+            vibe = "Night Owl" if late_pct >= 25 else "Early Bird"
+            result.append({
+                "id": "night_owl",
+                "label": "Listening Vibe",
+                "value": vibe,
+                "subtitle": f"{late_pct}% of plays between midnight–5am",
+            })
+
         avg_pct = round((float(row_listens["avg_completion"]) if row_listens else 0) * 100)
         result.append({
             "id": "avg_completion",
@@ -1117,12 +1253,46 @@ class Database:
             "subtitle": "mean listen-through",
         })
 
+        total_closed = int(row_listens["total"]) if row_listens else 0
+        skip_n = int(row_listens["skipped"]) if row_listens else 0
+        skip_pct = round(skip_n / total_closed * 100) if total_closed > 0 else 0
+        result.append({
+            "id": "skip_rate",
+            "label": "Skip Rate",
+            "value": f"{skip_pct}%",
+            "subtitle": f"{skip_n:,} tracks skipped before counting",
+        })
+
+        perfect_n = int(row_perfect["n"]) if row_perfect else 0
+        result.append({
+            "id": "perfect_listens",
+            "label": "Perfect Listens",
+            "value": f"{perfect_n:,}",
+            "subtitle": "tracks completed 100%",
+        })
+
         avg_hrs = round(float(row_avg["avg_hrs"]) if row_avg else 0, 1)
         result.append({
             "id": "avg_daily_last_week",
             "label": "Daily Avg (7d)",
             "value": f"{avg_hrs}h",
             "subtitle": "average daily listening, last week",
+        })
+
+        trend_this = int(row_trend["this_week"]) if row_trend else 0
+        trend_last = int(row_trend["last_week"]) if row_trend else 0
+        if trend_last > 0:
+            trend_delta = round((trend_this - trend_last) / trend_last * 100)
+            arrow = "↑" if trend_delta > 0 else "↓" if trend_delta < 0 else ""
+            trend_abs = abs(trend_delta)
+            trend_label = f"{arrow}{trend_abs}%"
+        else:
+            trend_label = "—"
+        result.append({
+            "id": "listening_trend",
+            "label": "Listening Trend",
+            "value": trend_label,
+            "subtitle": "this week vs last week",
         })
 
         return result

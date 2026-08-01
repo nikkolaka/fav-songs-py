@@ -96,6 +96,7 @@ class UserTracker:
         # Set when a playlist write failed, so a track that earned its place at the
         # exact moment Spotify was unavailable isn't left waiting for its next play.
         self._needs_reconcile = False
+        self._initialized = False
 
     # ------------------------------------------------------------- favourites
 
@@ -326,10 +327,37 @@ class UserTracker:
             log.warning("Could not close the open listen for user %s: %s", self.user_id, exc)
             self.session = None
 
+    # ----------------------------------------------------------- initialize
+
+    def _initialize(self, client: spotipy.Spotify) -> None:
+        settings = self.db.settings(self.user_id)
+
+        self._favorites_playlist(client, settings)
+
+        sources = self.db.discovery_sources(self.user_id)
+        existing_ids = {s["playlist_id"] for s in sources}
+
+        try:
+            dw_id = playlists.find_playlist_by_name(client, "Discover Weekly")
+            if dw_id and dw_id not in existing_ids:
+                self.db.add_discovery_source(self.user_id, dw_id, "Discover Weekly")
+                log.info("Auto-registered Discover Weekly source for user %s", self.user_id)
+                self.sweep_sources(client)
+        except Exception as exc:
+            log.warning(
+                "Could not auto-register Discover Weekly for user %s: %s", self.user_id, exc
+            )
+
+        self._initialized = True
+
     # ------------------------------------------------------------------- loop
 
     async def _cycle(self) -> None:
         client = await asyncio.to_thread(self.spotify.client, self.user_id)
+
+        if not self._initialized:
+            await asyncio.to_thread(self._initialize, client)
+
         active = await asyncio.to_thread(self._live_poll, client)
         if active is None:
             return  # couldn't reach Spotify; retry on next cycle
