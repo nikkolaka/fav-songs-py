@@ -113,7 +113,7 @@ export function NowPlayingCard({ now }: Props) {
             <span className="text-muted-foreground tabular-nums">
               {clock(heard)} / {clock(duration)}
             </span>
-            <span className={isPlaying ? "text-emerald-500" : "text-muted-foreground"}>
+            <span className={isPlaying ? "text-success" : "text-muted-foreground"}>
               {isPlaying ? "Listening" : "Paused"}
             </span>
           </div>

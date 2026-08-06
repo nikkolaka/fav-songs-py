@@ -69,7 +69,7 @@ export function Dashboard({ state, onRefresh }: Props) {
           <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
             <span
               className={`inline-block size-1.5 rounded-full ${
-                trackerRunning ? "bg-emerald-400" : "bg-muted-foreground/40"
+                trackerRunning ? "bg-success" : "bg-muted-foreground/40"
               }`}
             />
             {trackerRunning ? "Tracking" : "Paused"}

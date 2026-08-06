@@ -39,7 +39,7 @@ export function StatCard({ stat, pinned, onTogglePin, compact }: Props) {
         className={cn(
           "absolute top-1.5 right-1.5 size-3.5 transition-colors pointer-events-none",
           pinned
-            ? "text-amber-400 fill-amber-400"
+            ? "text-favorite fill-favorite"
             : "text-muted-foreground/0 group-hover:text-muted-foreground/50",
         )}
       />

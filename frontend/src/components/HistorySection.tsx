@@ -46,7 +46,7 @@ function HistoryRow({ item, isFav }: { item: HistoryItem; isFav: boolean }) {
       <span className="min-w-0 flex-1">
         <span className="text-sm font-medium truncate inline">
           {item.name}
-          {isFav && <Star className="inline size-3 text-amber-400 fill-amber-400 align-baseline ml-1" />}
+          {isFav && <Star className="inline size-3 text-favorite fill-favorite align-baseline ml-1" />}
         </span>
         <span className="block text-muted-foreground truncate">{item.artist}</span>
       </span>
